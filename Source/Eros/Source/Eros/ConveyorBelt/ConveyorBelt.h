@@ -18,6 +18,9 @@ public:
 
 	virtual void Tick(float DeltaSeconds) override;
 
+	/* Enable/Disable tick to control if the conveyor is moving. */
+	void ActivateConveyor(bool Active);
+
 private:
 
 	/* Collider to detect when a conveyor belt section has reached the end and needs placing back at the beginning. */
@@ -43,6 +46,10 @@ private:
 	/* How fast should the conveyor belt move in Unreal units per second.*/
 	UPROPERTY(EditAnywhere, Category = "Conveyor Belt")
 	float Speed;
+
+	/* if true the conveyor will move when started. Else it will need to be told to start at some point. */
+	UPROPERTY(EditAnywhere, Category = "Conveyor Belt")
+	bool DefaultActive;
 
 	/* All sections making up the conveyor belt. */
 	TArray<AConveyorBeltSection*> ConveyorBelt;

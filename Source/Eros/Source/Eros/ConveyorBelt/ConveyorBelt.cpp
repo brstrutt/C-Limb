@@ -17,6 +17,8 @@ AConveyorBelt::AConveyorBelt()
 
 	Collider = CreateDefaultSubobject<UBoxComponent>(TEXT("EndDetection"));
 	Collider->AttachToComponent(End, FAttachmentTransformRules(EAttachmentRule::KeepRelative, false));
+
+	DefaultActive = true;
 }
 
 void AConveyorBelt::BeginPlay()
@@ -45,6 +47,8 @@ void AConveyorBelt::BeginPlay()
 	FScriptDelegate ReachedEndDelegate;
 	ReachedEndDelegate.BindUFunction(this, FName("OnOverlapBegin"));
 	Collider->OnComponentBeginOverlap.Add(ReachedEndDelegate);
+
+	SetActorTickEnabled(DefaultActive);
 }
 
 void AConveyorBelt::Tick(float DeltaSeconds)
@@ -52,6 +56,11 @@ void AConveyorBelt::Tick(float DeltaSeconds)
 	Super::Tick(DeltaSeconds);
 
 	UpdatePieces(DeltaSeconds);
+}
+
+void AConveyorBelt::ActivateConveyor(bool Active)
+{
+	SetActorTickEnabled(Active);
 }
 
 void AConveyorBelt::OnOverlapBegin(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, int32 OtherBodyIndex, bool bFromSweep, const FHitResult& SweepResult)

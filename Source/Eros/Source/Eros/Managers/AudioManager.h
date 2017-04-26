@@ -13,24 +13,48 @@ class EROS_API AAudioManager : public AErosManager
 public:	
 
 	AAudioManager();
-
-	void BeginPlay() override;
-
+	
 	/* 
 	 * Search for and play the song with the requested name.
 	 *
 	 * Returns true if the song was found, false otherwise.
 	 */
+	UFUNCTION(BlueprintCallable, Category = Audio)
+	void PlaySong(USoundCue* Song);
+
+	UFUNCTION(BlueprintCallable, Category = Audio)
+	void PlayAudioCue(USoundCue* Voiceline);
+
+	UFUNCTION(BlueprintCallable, Category = Audio)
+	void PlayThemeSong();
+
 	UFUNCTION()
-	bool PlaySong(const FString& Name);
+	virtual void Initialise() override;
 
 private:
 
-	/* List of game songs to play. */
-	UPROPERTY(EditDefaultsOnly, Category = Soundtrack)
-	TArray<USoundCue*> Soundtrack;
+	UPROPERTY(EditDefaultsOnly, Category = Settings)
+	float MusicVolume = 0.3f;
+
+	UPROPERTY(EditDefaultsOnly, Category = Settings)
+	float AudioVolume = 1.0;
+
+	UPROPERTY(EditDefaultsOnly, Category = Audio)
+	USoundCue* ThemeSong;
 
 	/* Audio component required to play songs. */
 	UPROPERTY(EditDefaultsOnly, Category = Audio)
-	UAudioComponent* AudioComponent;
+	UAudioComponent* SoundtrackPlayer;
+
+	/* Audio component to play audio cues e.g. tutorial, hints */
+	UPROPERTY(EditDefaultsOnly, Category = Audio)
+	UAudioComponent* AudioCuePlayer;
+
+	/* List of game songs to play. */
+	TArray<USoundCue*> Soundtrack;
+
+	/* List of audio cues to play. */
+	TArray<USoundCue*> AudioCues;
+
+	USoundCue* CurrentSong;
 };

@@ -4,6 +4,9 @@
 #include "Prosthetic.h"
 #include "ProstheticSocket.h"
 #include "Sound/SoundCue.h"
+#include "Runtime/SlateCore/Public/Layout/SlateRect.h"
+#include "Runtime/SlateCore/Public/Layout/ArrangedWidget.h"
+#include "Runtime/UMG/Public/Components/WidgetComponent.h"
 
 AProsthetic::AProsthetic()
 {
@@ -18,6 +21,13 @@ AProsthetic::AProsthetic()
 	AudioComponent->AttachToComponent(RootComponent, FAttachmentTransformRules(EAttachmentRule::KeepRelative, false));
 }
 
+void AProsthetic::BeginPlay()
+{
+	Super::BeginPlay();
+
+	SetActorTickEnabled(false);
+}
+
 void AProsthetic::PlayFootstepSound() const
 {
 	if (FootstepSound == nullptr) { return; }
@@ -25,6 +35,11 @@ void AProsthetic::PlayFootstepSound() const
 	AudioComponent->SetVolumeMultiplier(SoundVolume);
 	AudioComponent->SetSound(FootstepSound);
 	AudioComponent->Play();
+}
+
+void AProsthetic::SetMeshVisibility(bool bShow)
+{
+	ProstheticMesh->SetVisibility(bShow);
 }
 
 bool AProsthetic::AttachToSocket(UProstheticSocket& Socket)
@@ -96,4 +111,14 @@ void AProsthetic::SecondaryActionEnd()
 	{
 		ActionState = EActionState::AS_Inactive;
 	}
+}
+
+void AProsthetic::OnAttached()
+{
+	SetActorTickEnabled(true);
+}
+
+void AProsthetic::OnDetached()
+{
+	SetActorTickEnabled(false);
 }

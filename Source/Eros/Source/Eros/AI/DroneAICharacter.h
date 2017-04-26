@@ -10,6 +10,8 @@ class UBehaviorTree;
 class UPawnSensingComponent;
 class USoundCue;
 
+struct FDroneRespawnState;
+
 /* This class is the physical AI character present in the world. It is controlled by the ADroneAIController class. */
 UCLASS()
 class EROS_API ADroneAICharacter : public ACharacter
@@ -22,7 +24,7 @@ public:
 
 	virtual void BeginPlay() override;
 	
-	/* When hearing a noise, set the AIController's TargetLocation to the noise location. */
+	/*When hearing a noise, set the AIController's TargetLocation to the noise location. */
 	UFUNCTION()
 	void NoiseDetected(APawn* PawnInstigator, const FVector& Location, float Volume);
 
@@ -46,7 +48,6 @@ public:
 
 	/* Change the AI's walking speed between walking and running. */
 	void SetWalking();
-
 	void SetRunning();
 
 	/* Play a provided sound clip without breaking ambient noise. */
@@ -55,12 +56,17 @@ public:
 	void StopCurrentReactionSound();
 
 	FORCEINLINE float GetWarmupTime() const { return WarmupTime; }
-
 	FORCEINLINE float GetCooldownTime() const { return CooldownTime; }
-
 	FORCEINLINE float GetObserveDuration() const { return ObserveDuration; }
-
 	FORCEINLINE UBehaviorTree* GetDroneBehaviour() { return DroneBehaviour; }
+
+	/* Return the drone to it's spawn state. */
+	void ResetDroneState();
+
+	/* Return the drone's current position, destination, and behaviour state. */
+	FDroneRespawnState GetCurrentDroneState();
+	/* Set this drone's current position, destination, and behaviour state. */
+	void SetCurrentDroneState(FDroneRespawnState NewGameState);
 	
 private:
 
@@ -78,10 +84,9 @@ private:
 	UPROPERTY(EditAnywhere, Category = "AI")
 	AAIDronePatrolPath* DronePatrolRoute;
 
-	/* The AI's walk and run speeds. */
+	/* The AI's walk AND run speeds. */
 	UPROPERTY(EditAnywhere, Category = "AI")
 	float WalkingSpeed;
-
 	UPROPERTY(EditAnywhere, Category = "AI")
 	float RunningSpeed;
 
@@ -89,28 +94,38 @@ private:
 	UPROPERTY(EditAnywhere, Category = "AI")
 	float ObserveDuration;
 
-	/* The warmup and cooldown times the AI applies before/after chasing the player. */
+	/* The warmup AND cooldown times the AI applies before/after chasing the player. */
 	UPROPERTY(EditAnywhere, Category = "AI")
 	float WarmupTime;
-
 	UPROPERTY(EditAnywhere, Category = "AI")
 	float CooldownTime;
+
+	UPROPERTY(EditAnywhere, Category = "AI")
+	float VerticalSightRange;
+
+	/* The camera boom holding the drone mesh and the drone mesh itself */
+	UPROPERTY(EditDefaultsOnly, Category = "Visuals")
+	USpringArmComponent* DroneSpringArm;
+
+	UPROPERTY(EditAnywhere, Category = "Visuals")
+	USkeletalMeshComponent* DroneMesh;
+
+	/* The drones initial position and rotation */
+	FVector InitialLocation;
+	FRotator InitialRotation;
 
 	/* The decal that shows the AI's hearing range through walls. */
 	UPROPERTY(EditDefaultsOnly, Category = "UI")
 	UDecalComponent* OccludedRangeDisplay;
-
-	/* Point light showing the AI's un-occluded hearing range. */
-	UPROPERTY(EditDefaultsOnly, Category = "UI")
-	UPointLightComponent* MaxHearingRangeDisplay;
-
+	///* Point light showing the AI's un-occluded hearing range. */
+	//UPROPERTY(EditDefaultsOnly, Category = "UI")
+	//UPointLightComponent* MaxHearingRangeDisplay;
 	/* Spotlight showing the AI's FOV */
 	UPROPERTY(EditDefaultsOnly, Category = "UI")
 	USpotLightComponent* FOVSpotlight;	
 
 	/* Component to play the Drone's ambient noises. */
 	UAudioComponent* AmbientAudioComp;
-
 	/* Component to play the Drone's reactions to the player. */
 	UAudioComponent* ReactionAudioComp;
 
@@ -118,10 +133,6 @@ private:
 	UPROPERTY(EditDefaultsOnly, Category = "UI")
 	USoundCue* PatrollingWhir;
 	
-	/* Update the Audio ranges using the provided ErosCharacter's Prosthetic information. */
-	UFUNCTION()
-	void UpdateAudioRanges(AErosCharacter* PlayerCharacter);
-
 	/* Update the hearing ranges based on the volume of potential noises. */
 	void ScaleAudioRanges(float Volume);
 };

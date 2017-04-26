@@ -7,7 +7,7 @@ struct FErosCharacterMovement;
 
 /* A prosthetic for a leg socket that increases the characters speed at the cost of additional sound. */
 UCLASS()
-class EROS_API AProsthetic_RunningBlade : public AProsthetic
+class EROS_API AProsthetic_RunningBlade : public AProsthetic_BasicLeg
 {
 	GENERATED_BODY()
 

@@ -2,11 +2,13 @@
 
 #include "../../InteractableObjects/InteractableActor.h"
 #include "ProstheticType.h"
+
 #include "Prosthetic.generated.h"
 
 class UProstheticSocket;
 class USoundCue;
 class USlateBrushAsset;
+class UUserWidget;
 
 struct FErosCharacterMovement;
 
@@ -30,9 +32,15 @@ class EROS_API AProsthetic : public AInteractableActor
 public:
 
 	AProsthetic();
+
+	UFUNCTION(BlueprintCallable, Category = Prosthetic)
+	FORCEINLINE TSubclassOf<UUserWidget> GetHelpWidget() { return HelpWidget; }
 	
 	/* Get the prosthetic type. */
 	FORCEINLINE EProstheticType GetType() const { return ProstheticType; }
+
+	/* Get the prosthetic reference. */
+	FORCEINLINE TSubclassOf<AUnattachedProsthetic> GetUnattachedProsthetic() const { return UnattachedProsthetic; }
 
 	/* Get the socket this prosthetic is attached to. May be null! */
 	FORCEINLINE UProstheticSocket* GetSocket() { return AttachedSocket; }
@@ -46,14 +54,18 @@ public:
 	/* Get the action state of the prosthetic. */
 	FORCEINLINE EActionState GetProstheticState() const { return ActionState; }
 
-	/* Get the prosthetic skeletal mesh. */
+	/* Get the Prosthetic's Mesh */
 	FORCEINLINE USkeletalMeshComponent* GetMesh() { return ProstheticMesh; }
-
+	
 	/* Get the prosthetic texture to use in the HUD. */
 	UFUNCTION(BlueprintCallable, Category = UI)
 	FORCEINLINE USlateBrushAsset* GetUiComponent() const { return UiSlateBrush; }
 
+	virtual void BeginPlay() override;
+
 	virtual void PlayFootstepSound() const;
+
+	virtual void SetMeshVisibility(bool bShow);
 
 	/*
 	* Apply any modifiers to the characters movement.
@@ -77,16 +89,22 @@ public:
 protected:
 
 	/* Called when the prosthetic is attached to a new socket. */
-	virtual void OnAttached() {};
+	virtual void OnAttached();
 
 	/* Called when the prosthetic is detached from the current socket. */
-	virtual void OnDetached() {};
+	virtual void OnDetached();
 
+	/* Action state of the prosthetic.... */
+	EActionState ActionState;
 private:
 
 	/* The type of this particular prosthetic. */
 	UPROPERTY(EditDefaultsOnly, Category = Prosthetic)
 	EProstheticType ProstheticType;
+
+	/* The unattached version of this prosthetic. */
+	UPROPERTY(EditDefaultsOnly, Category = Prosthetic)
+	TSubclassOf<AUnattachedProsthetic> UnattachedProsthetic;
 
 	/* The prosthetic mesh... */
 	UPROPERTY(EditDefaultsOnly, Category = Prosthetic)
@@ -108,14 +126,14 @@ private:
 	UPROPERTY(EditDefaultsOnly, Category = UI)
 	USlateBrushAsset* UiSlateBrush;
 
+	UPROPERTY(EditDefaultsOnly, Category = UI)
+	TSubclassOf<UUserWidget> HelpWidget;
+
 	/* Component to play prosthetic sounds. */
 	UAudioComponent* AudioComponent;
 
 	/* The socket the prosthetic is currently attached to. */
 	UProstheticSocket* AttachedSocket;
-
-	/* Action state of the prosthetic.... */
-	EActionState ActionState;
 
 	/*
 	* Attach this prosthetic to a socket. Can only be called by UProstheticSocket.

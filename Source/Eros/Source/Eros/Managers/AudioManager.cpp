@@ -6,34 +6,87 @@ AAudioManager::AAudioManager()
 {
 	PrimaryActorTick.bCanEverTick = false;
 
-	RootComponent = AudioComponent = CreateDefaultSubobject<UAudioComponent>(TEXT("AudioComponent"));
+	RootComponent = SoundtrackPlayer = CreateDefaultSubobject<UAudioComponent>(TEXT("AudioComponent"));
+
+	AudioCuePlayer = CreateDefaultSubobject<UAudioComponent>(TEXT("AudioCues"));
+	AudioCuePlayer->AttachToComponent(RootComponent, FAttachmentTransformRules(EAttachmentRule::KeepRelative, false));
 }
 
-void AAudioManager::BeginPlay()
+void AAudioManager::Initialise()
 {
-	Super::BeginPlay();
+	Super::Initialise();
 
-	PlaySong("FrontLineAssemlby_Vanished");
+	UE_LOG(LogTemp, Warning, TEXT("FUCKEN STOP THE AUDIO"));
+
+	AudioCuePlayer->Stop();
+	PlayThemeSong();
 }
 
-bool AAudioManager::PlaySong(const FString& Name)
+void AAudioManager::PlaySong(USoundCue* Song)
 {
-	// Find the Named song in the Soundtrack array
-	for (int Index = 0; Index < Soundtrack.Num(); Index++)
-	{
-		if (Soundtrack[Index]->GetName().Compare(Name))
-		{
-			// Play the song
-			AudioComponent->SetSound(Soundtrack[Index]);
-			
-			if (!AudioComponent->IsPlaying())
-			{
-				AudioComponent->Play();
-			}
+	// Already playing.
+	if (!IsValid(Song) || Song == CurrentSong) { return; }
 
-			return true;
-		}
-	}
+	//// Find the Named song in the Soundtrack array
+	//for (int Index = 0; Index < Soundtrack.Num(); Index++)
+	//{
+	//	if (Soundtrack[Index]->GetName() == Song->GetName())
+	//	{
+	//		// Play the song
+	//		SoundtrackPlayer->SetSound(Soundtrack[Index]);
+	//		
+	//		if (!SoundtrackPlayer->IsPlaying())
+	//		{
+	//			SoundtrackPlayer->SetVolumeMultiplier(MusicVolume);
+	//			SoundtrackPlayer->Play();
+	//		}
 
-	return false;
+	//		CurrentSong = Song;
+
+	//		return;
+	//	}
+	//}
+
+	//// Didn't exist, add it.
+	//Soundtrack.Add(Song);
+
+	SoundtrackPlayer->SetSound(Song);
+	SoundtrackPlayer->SetVolumeMultiplier(MusicVolume);
+	SoundtrackPlayer->Play();
+}
+
+void AAudioManager::PlayAudioCue(USoundCue* Voiceline)
+{
+	if (!IsValid(Voiceline)) { return; }
+
+	//// Find the Named song in the Soundtrack array
+	//for (int Index = 0; Index < AudioCues.Num(); Index++)
+	//{
+	//	if (AudioCues[Index]->GetName() == Voiceline->GetName())
+	//	{
+	//		// Play the song
+	//		AudioCuePlayer->SetSound(AudioCues[Index]);
+
+	//		if (!AudioCuePlayer->IsPlaying())
+	//		{
+	//			AudioCuePlayer->SetVolumeMultiplier(AudioVolume);
+	//			AudioCuePlayer->Play();
+	//		}
+
+	//		return;
+	//	}
+	//}
+
+	//// Didn't exist, add it.
+	//AudioCues.Add(Voiceline);
+
+	AudioCuePlayer->SetSound(Voiceline);
+	AudioCuePlayer->SetVolumeMultiplier(AudioVolume);
+	AudioCuePlayer->Play();
+}
+
+void AAudioManager::PlayThemeSong()
+{
+	PlaySong(ThemeSong);
+	SoundtrackPlayer->SetVolumeMultiplier(0.15f);
 }

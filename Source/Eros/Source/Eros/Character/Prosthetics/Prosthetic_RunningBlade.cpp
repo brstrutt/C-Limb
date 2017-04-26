@@ -5,7 +5,7 @@
 
 FErosCharacterMovement AProsthetic_RunningBlade::ApplyModifiers(FErosCharacterMovement CharacterMovement) const
 {
-	CharacterMovement.MaxWalkSpeed *= RunningSpeedModifier;
+	CharacterMovement.WalkSpeed *= RunningSpeedModifier;
 
 	return CharacterMovement;
 }

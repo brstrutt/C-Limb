@@ -6,7 +6,7 @@
 FErosCharacterMovement AProsthetic_SpringLeg::ApplyModifiers(FErosCharacterMovement CharacterMovement) const
 {
 	CharacterMovement.JumpZVelocity *= JumpForceModifier;
-	CharacterMovement.MaxWalkSpeed *= RunSpeedModifier;
+	CharacterMovement.WalkSpeed *= RunSpeedModifier;
 
 	return CharacterMovement;
 }

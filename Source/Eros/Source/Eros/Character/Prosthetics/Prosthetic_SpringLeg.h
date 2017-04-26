@@ -7,7 +7,7 @@ struct FErosCharacterMovement;
 
 /* A prosthetic for a leg socket that increases the jump force of the player. */
 UCLASS()
-class EROS_API AProsthetic_SpringLeg : public AProsthetic
+class EROS_API AProsthetic_SpringLeg : public AProsthetic_BasicLeg
 {
 	GENERATED_BODY()
 

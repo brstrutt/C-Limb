@@ -6,6 +6,7 @@
 #include "BehaviorTree/Blackboard/BlackboardKeyAllTypes.h"
 #include "DroneAIController.h"
 #include "DroneAICharacter.h"
+#include "Character/ErosCharacter.h"
 #include "EngineUtils.h"
 #include "Sound/SoundCue.h"
 
@@ -25,7 +26,8 @@ ADroneAIController::ADroneAIController()
 	CurrentStateKey = "AIState";
 	ObserveWaitTimeKey = "ObserveWaitTime";
 
-	LastNavmeshLocation = FVector(0.0f, 0.0f, 0.0f);
+	DroneBehaviourVariables.LastNavmeshLocation = FVector(0.0f, 0.0f, 0.0f);
+	TimeSinceLastOnNavmesh = 0.0f;
 }
 
 void ADroneAIController::Possess(APawn* InPawn)
@@ -46,9 +48,8 @@ void ADroneAIController::Possess(APawn* InPawn)
 		// Initialise AI state to nothing
 		DroneBlackboardComp->SetValueAsEnum(CurrentStateKey, (uint8)EAIBehaviourState::BS_None);
 
-		// Set the defaul Waypoint index to -1 (a check for -1 can be used to catch errors caused by there being no points in the spline)
-		NextSplinePointIndex = -1;
-		
+		// Set the default Waypoint index to -1 (a check for -1 can be used to catch errors caused by there being no points in the spline)
+		int32 NextSplinePointIndex = -1;		
 		// Set the first destination
 		if (ControlledDrone->GetNumberOfPatrolPoints() > 0)
 		{
@@ -66,53 +67,87 @@ void ADroneAIController::Possess(APawn* InPawn)
 		}
 
 		// Default Alert Values
-		AlertLevel = 0.0f;
 		WarmupTime = ControlledDrone->GetWarmupTime();
 		CooldownTime = ControlledDrone->GetCooldownTime();
-
-		TimeSinceLastSightDetection = 0.0f;
-		bPlayerSeenThisTick = false;
 		bNoiseHeardThisTick = false;
-		DistToPlayer = 0.0f;
-
+		
 		// Create the AI's TargetLocation
 		TargetLocation = Cast<ATargetPoint>(GetWorld()->SpawnActor(ATargetPoint::StaticClass()));
 		DroneBlackboardComp->SetValueAsObject(TargetLocationKey, TargetLocation);
 
 		// Store the Observe duration
 		DroneBlackboardComp->SetValueAsFloat(ObserveWaitTimeKey, ControlledDrone->GetObserveDuration());
+		
+		ControlledDrone->GetCapsuleComponent()->OnComponentHit.AddDynamic(this, &ADroneAIController::OnDroneCollision);
+		
+		DroneBehaviourVariables = FBehaviourVariables{
+			0.0f,
+			0.0f,
+			false,
+			//false,
+			false,
+			NextSplinePointIndex,
+			ControlledDrone->GetActorLocation(),
+			0.0f };
+
+		InitialDroneBehaviourVariables = DroneBehaviourVariables;
 	}
 }
 
 void ADroneAIController::PlayerSeen(APawn* SeenPawn)
 {
-	bPlayerSeenThisTick = true;
+	DroneBehaviourVariables.bPlayerSeenThisTick = true;
 	DroneBlackboardComp->SetValueAsObject(TargetObjectKey, SeenPawn);
 	TargetLocation->SetActorLocation(SeenPawn->GetActorLocation());
-
-	DistToPlayer = (SeenPawn->GetActorLocation() - ControlledDrone->GetActorLocation()).Size();
-	TimeSinceLastSightDetection = 0.0f;
+	DroneBehaviourVariables.DistToPlayer = (SeenPawn->GetActorLocation() - ControlledDrone->GetActorLocation()).Size();
+	DroneBehaviourVariables.TimeSinceLastSightDetection = 0.0f;
 }
 
 void ADroneAIController::PlayerHeard(APawn* HeardPawn)
 {
 	// Only register the noise if it occurred within the navmesh
 	FNavLocation temp;
-	if (UNavigationSystem::GetCurrent(GetWorld())->ProjectPointToNavigation(HeardPawn->GetActorLocation(), temp))
-	{
-		bNoiseHeardThisTick = true;
-		TargetLocation->SetActorLocation(HeardPawn->GetActorLocation());
-	}
+	bNoiseHeardThisTick = true;
+	TargetLocation->SetActorLocation(HeardPawn->GetActorLocation());
 }
 
 void ADroneAIController::TargetPointReached()
 {
-	StateTaskComplete = true;
+	DroneBehaviourVariables.StateTaskComplete = true;
 }
 
 FVector ADroneAIController::GetLocationOfNextPatrolPoint()
 {
-	return ControlledDrone->GetLocationOfPatrolPoint(NextSplinePointIndex);
+	return ControlledDrone->GetLocationOfPatrolPoint(DroneBehaviourVariables.NextSplinePointIndex);
+}
+
+void ADroneAIController::ResetDroneState()
+{
+	SetDroneBehaviourVariables(InitialDroneBehaviourVariables);
+	SetTargetPointLocation(FVector(0,0,0));
+	SetBehaviourState(EAIBehaviourState::BS_None);
+	TimeSinceLastOnNavmesh = 0.0f;
+}
+
+FVector ADroneAIController::GetTargetPointLocation()
+{
+	return TargetLocation->GetActorLocation();
+}
+
+void ADroneAIController::SetTargetPointLocation(FVector NewLocation)
+{
+	TargetLocation->SetActorLocation(NewLocation);
+}
+
+uint8 ADroneAIController::GetBehaviourState()
+{
+	return DroneBlackboardComp->GetValueAsEnum(CurrentStateKey);
+}
+
+void ADroneAIController::SetBehaviourState(EAIBehaviourState NewState)
+{
+	ExitState((EAIBehaviourState)DroneBlackboardComp->GetValueAsEnum(CurrentStateKey));
+	EnterState(NewState);
 }
 
 void ADroneAIController::Tick(float DeltaSeconds)
@@ -124,19 +159,25 @@ void ADroneAIController::Tick(float DeltaSeconds)
 		case EAIBehaviourState::BS_Patrol:
 			TickAlertLevelUp(DeltaSeconds);
 			// Update the colour of the AI's detection range to match the level of alertness
-			ControlledDrone->SetAudioRangeColour(FLinearColor(AlertLevel / WarmupTime, 0.0f, 1.0f - (AlertLevel / WarmupTime)));
+			ControlledDrone->SetAudioRangeColour(FLinearColor::White - FLinearColor(0.0f, DroneBehaviourVariables.AlertLevel / WarmupTime, DroneBehaviourVariables.AlertLevel / WarmupTime));
 			ExecutePatrolTick(DeltaSeconds);
 			break;
 		case EAIBehaviourState::BS_Observe:
 			TickAlertLevelUp(DeltaSeconds);
 			// Update the colour of the AI's detection range to match the level of alertness
-			ControlledDrone->SetAudioRangeColour(FLinearColor(AlertLevel / WarmupTime, 0.0f, 1.0f - (AlertLevel / WarmupTime)));
+			ControlledDrone->SetAudioRangeColour(FLinearColor::White -  FLinearColor(0.0f, DroneBehaviourVariables.AlertLevel / WarmupTime, DroneBehaviourVariables.AlertLevel / WarmupTime));
 			ExecuteObserveTick(DeltaSeconds);
+			break;
+		case EAIBehaviourState::BS_Alert:
+			TickAlertLevelUp(DeltaSeconds);
+			// Update the colour of the AI's detection range to match the level of alertness
+			ControlledDrone->SetAudioRangeColour(FLinearColor::White - FLinearColor(0.0f, DroneBehaviourVariables.AlertLevel / WarmupTime, DroneBehaviourVariables.AlertLevel / WarmupTime));
+			ExecuteAlertTick(DeltaSeconds);
 			break;
 		case EAIBehaviourState::BS_Investigate:
 			TickAlertLevelUp(DeltaSeconds);
 			// Update the colour of the AI's detection range to match the level of alertness
-			ControlledDrone->SetAudioRangeColour(FLinearColor(1.0f , 1.0f - (AlertLevel / WarmupTime), 0.0f));
+			ControlledDrone->SetAudioRangeColour(FLinearColor::Yellow - FLinearColor(0.0f , DroneBehaviourVariables.AlertLevel / WarmupTime, DroneBehaviourVariables.AlertLevel / WarmupTime));
 			ExecuteInvestigateTick(DeltaSeconds);
 			break;
 		case EAIBehaviourState::BS_Chase :
@@ -144,72 +185,101 @@ void ADroneAIController::Tick(float DeltaSeconds)
 			ExecuteChaseTick(DeltaSeconds);
 			break;
 		case EAIBehaviourState::BS_None:
-			EnterPatrolState();
+			SetBehaviourState(EAIBehaviourState::BS_Patrol);
 			break;
 	}
 
 	// Reset detections in preparation for the next tick.
-	bPlayerSeenThisTick = false;
+	DroneBehaviourVariables.bPlayerSeenThisTick = false;
 	bNoiseHeardThisTick = false;
 
-	TimeSinceLastSightDetection += DeltaSeconds;
+	DroneBehaviourVariables.TimeSinceLastSightDetection += DeltaSeconds;
 
 
 	// Revert the AI's position if it left the navmesh
 	FNavLocation temp;
 	if (UNavigationSystem::GetCurrent(GetWorld())->ProjectPointToNavigation(ControlledDrone->GetActorLocation(), temp))
 	{
-		LastNavmeshLocation = ControlledDrone->GetActorLocation();
+		DroneBehaviourVariables.LastNavmeshLocation = ControlledDrone->GetActorLocation();
+		TimeSinceLastOnNavmesh = 0.0f;
 	}
 	else
 	{
-		ControlledDrone->SetActorLocation(LastNavmeshLocation);
+		TimeSinceLastOnNavmesh += DeltaSeconds;
+
+		if(TimeSinceLastOnNavmesh > 1.0f) ControlledDrone->SetActorLocation(DroneBehaviourVariables.LastNavmeshLocation);
 	}
 }
 
 void ADroneAIController::TickAlertLevelUp(float DeltaSeconds)
 {
-	if ((TimeSinceLastSightDetection < ControlledDrone->GetSensingInterval() * 1.1f) && (DistToPlayer != 0.0f))
+	if ((DroneBehaviourVariables.TimeSinceLastSightDetection < ControlledDrone->GetSensingInterval() * 1.1f) && (DroneBehaviourVariables.DistToPlayer != 0.0f))
 	{
 		// Increase alert level based on how close the player was when it was seen
-		AlertLevel += DeltaSeconds * (2000.0f / DistToPlayer);
+		DroneBehaviourVariables.AlertLevel += DeltaSeconds * (2000.0f / DroneBehaviourVariables.DistToPlayer);
 
-		if (AlertLevel > WarmupTime)
+		if (DroneBehaviourVariables.AlertLevel > WarmupTime)
 		{
-			AlertLevel = WarmupTime;
+			DroneBehaviourVariables.AlertLevel = WarmupTime;
 		}
 	}
 	else
 	{
-		AlertLevel -= DeltaSeconds;
+		DroneBehaviourVariables.AlertLevel -= DeltaSeconds;
 
-		if (AlertLevel < 0.0f) 
+		if (DroneBehaviourVariables.AlertLevel < 0.0f)
 		{ 
-			AlertLevel = 0.0f; 
+			DroneBehaviourVariables.AlertLevel = 0.0f;
 		}
 	}
 }
 
 bool ADroneAIController::PlayerVisuallyDetected()
 {
-	// (AlertLevel >= WarmupTime) would work if they weren't floats.
-	return AlertLevel - WarmupTime >= -0.001f;
+	return DroneBehaviourVariables.AlertLevel - WarmupTime >= -0.001f;
 }
 
 void ADroneAIController::TickAlertLevelDown(float DeltaSeconds)
 {
-	AlertLevel -= DeltaSeconds; 
+	DroneBehaviourVariables.AlertLevel -= DeltaSeconds;
 
-	if (bPlayerSeenThisTick)
+	if (DroneBehaviourVariables.bPlayerSeenThisTick)
 	{
-		AlertLevel = WarmupTime;
+		DroneBehaviourVariables.AlertLevel = WarmupTime;
 	}
 }
 
 bool ADroneAIController::PlayerVisuallyLost()
 {
-	// (AlertLevel < WarmupTime - CooldownTime) would work if they weren't floats
-	return AlertLevel - (WarmupTime - CooldownTime) < 0.001;
+	return DroneBehaviourVariables.AlertLevel - (WarmupTime - CooldownTime) < 0.001;
+}
+
+void ADroneAIController::OnDroneCollision(UPrimitiveComponent* HitComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, FVector NormalImpulse, const FHitResult& Hit)
+{
+	/*if (OtherActor && OtherActor->GetClass()->IsChildOf(AErosCharacter::StaticClass()))
+	{
+		bPlayerSeenThisTick = false;
+		//bPlayerHeardThisTick = false;
+		AlertLevel = 0.0f;
+		switch ((EAIBehaviourState)DroneBlackboardComp->GetValueAsEnum(CurrentStateKey))
+		{
+		case EAIBehaviourState::BS_Patrol:
+			break;
+		case EAIBehaviourState::BS_Observe:
+			break;
+		case EAIBehaviourState::BS_Investigate:
+			ExitInvestigateState();
+			EnterPatrolState();
+			break;
+		case EAIBehaviourState::BS_Chase:
+			ExitChaseState();
+			EnterPatrolState();
+			break;
+		case EAIBehaviourState::BS_None:
+			EnterPatrolState();
+			break;
+		}
+	}*/
 }
 
 void ADroneAIController::ExecutePatrolTick(float DeltaSeconds)
@@ -217,26 +287,22 @@ void ADroneAIController::ExecutePatrolTick(float DeltaSeconds)
 	//If the player has been in sight recently switch to chase
 	if (PlayerVisuallyDetected())
 	{
-		ExitPatrolState();
-		EnterChaseState();
+		SetBehaviourState(EAIBehaviourState::BS_Chase);
 	}
-	else if (bNoiseHeardThisTick)
+	else if (bNoiseHeardThisTick || DroneBehaviourVariables.bPlayerSeenThisTick)
 	{
-		ExitPatrolState();
-		EnterInvestigateState();
+		SetBehaviourState(EAIBehaviourState::BS_Alert);
 	}
 	//If the next waypoint has been reached then pause to observe
-	else if (StateTaskComplete)
+	else if (DroneBehaviourVariables.StateTaskComplete)
 	{
-		ExitPatrolState();
-		EnterObserveState();
+		SetBehaviourState(EAIBehaviourState::BS_Observe);
 
 		// Update the destination point
-		if (NextSplinePointIndex != -1)
+		if (DroneBehaviourVariables.NextSplinePointIndex != -1)
 		{
-			++NextSplinePointIndex;
-			ADroneAICharacter* Drone = Cast<ADroneAICharacter>(GetPawn());
-			if(NextSplinePointIndex >= Drone->GetNumberOfPatrolPoints()) NextSplinePointIndex = 0;
+			++DroneBehaviourVariables.NextSplinePointIndex;
+			if(DroneBehaviourVariables.NextSplinePointIndex >= ControlledDrone->GetNumberOfPatrolPoints()) DroneBehaviourVariables.NextSplinePointIndex = 0;
 		}
 	}
 }
@@ -246,19 +312,28 @@ void ADroneAIController::ExecuteObserveTick(float DeltaSeconds)
 	//If the player has been in sight recently switch to chase
 	if (PlayerVisuallyDetected())
 	{
-		ExitObserveState();
-		EnterChaseState();
+		SetBehaviourState(EAIBehaviourState::BS_Chase);
 	}
 	else if (bNoiseHeardThisTick)
 	{
-		ExitObserveState();
-		EnterInvestigateState();
+		SetBehaviourState(EAIBehaviourState::BS_Alert);
 	}
 	//If the Observe phase is complete switch back to patrol
-	else if (StateTaskComplete)
+	else if (DroneBehaviourVariables.StateTaskComplete)
 	{
-		ExitObserveState();
-		EnterPatrolState();
+		SetBehaviourState(EAIBehaviourState::BS_Patrol);
+	}
+}
+
+void ADroneAIController::ExecuteAlertTick(float DeltaSeconds)
+{
+	if (PlayerVisuallyDetected())
+	{
+		SetBehaviourState(EAIBehaviourState::BS_Chase);
+	}
+	else if (DroneBehaviourVariables.StateTaskComplete)
+	{
+		SetBehaviourState(EAIBehaviourState::BS_Patrol);
 	}
 }
 
@@ -267,14 +342,12 @@ void ADroneAIController::ExecuteInvestigateTick(float DeltaSeconds)
 	//If the player has been in sight recently switch to chase
 	if (PlayerVisuallyDetected())
 	{
-		ExitInvestigateState();
-		EnterChaseState();
+		SetBehaviourState(EAIBehaviourState::BS_Chase);
 	}
 	//If the Location to investigate has been reached switch back to Patrolling
-	else if (StateTaskComplete)
+	else if (DroneBehaviourVariables.StateTaskComplete)
 	{
-		ExitInvestigateState();
-		EnterObserveState();
+		SetBehaviourState(EAIBehaviourState::BS_Observe);
 	}
 }
 
@@ -282,61 +355,75 @@ void ADroneAIController::ExecuteChaseTick(float DeltaSeconds)
 {
 	if (PlayerVisuallyLost())
 	{
-		AlertLevel = 0.0f;
-		ExitChaseState();
+		DroneBehaviourVariables.AlertLevel = 0.0f;
 		
 		// Set the TargetLocation for the investigate state
 		AActor* CurrentTarget = Cast<AActor>(DroneBlackboardComp->GetValueAsObject(TargetObjectKey));
-		TargetLocation->SetActorLocation(CurrentTarget->GetActorLocation());
-		EnterInvestigateState();
+		if (CurrentTarget)
+		{
+			TargetLocation->SetActorLocation(CurrentTarget->GetActorLocation());
+			SetBehaviourState(EAIBehaviourState::BS_Investigate);
+		}
+		else
+		{
+			SetBehaviourState(EAIBehaviourState::BS_Observe);
+		}
 	}
 }
 
-
-void ADroneAIController::EnterPatrolState()
+void ADroneAIController::EnterState(EAIBehaviourState NewState)
 {
-	ControlledDrone->SetWalking();
-	DroneBlackboardComp->SetValueAsEnum(CurrentStateKey, (uint8)EAIBehaviourState::BS_Patrol);
-	ControlledDrone->SetAudioRangeColour(FLinearColor::Blue);
-	StateTaskComplete = false;
+	switch (NewState)
+	{
+		case EAIBehaviourState::BS_Patrol:
+			ControlledDrone->SetWalking();
+			DroneBlackboardComp->SetValueAsEnum(CurrentStateKey, (uint8)EAIBehaviourState::BS_Patrol);
+			ControlledDrone->SetAudioRangeColour(FLinearColor::White);
+			DroneBehaviourVariables.StateTaskComplete = false;
+			break;
+		case EAIBehaviourState::BS_Observe:
+			DroneBlackboardComp->SetValueAsEnum(CurrentStateKey, (uint8)EAIBehaviourState::BS_Observe);
+			ControlledDrone->SetAudioRangeColour(FLinearColor::White);
+			DroneBehaviourVariables.StateTaskComplete = false;
+			break;
+		case EAIBehaviourState::BS_Alert:
+			DroneBlackboardComp->SetValueAsEnum(CurrentStateKey, (uint8)EAIBehaviourState::BS_Alert);
+			DroneBehaviourVariables.StateTaskComplete = false;
+			break;
+		case EAIBehaviourState::BS_Investigate:
+			ControlledDrone->SetRunning();
+			DroneBlackboardComp->SetValueAsEnum(CurrentStateKey, (uint8)EAIBehaviourState::BS_Investigate);
+			ControlledDrone->SetAudioRangeColour(FLinearColor::Yellow);
+			DroneBehaviourVariables.StateTaskComplete = false;
+			break;
+		case EAIBehaviourState::BS_Chase:
+			ControlledDrone->SetRunning();
+			DroneBlackboardComp->SetValueAsEnum(CurrentStateKey, (uint8)EAIBehaviourState::BS_Chase);
+			ControlledDrone->SetAudioRangeColour(FLinearColor::Red);
+			DroneBehaviourVariables.StateTaskComplete = false;
+			ControlledDrone->PlayReactionSound(ChasingBeepLoop);
+			break;
+		case EAIBehaviourState::BS_None:
+			DroneBlackboardComp->SetValueAsEnum(CurrentStateKey, (uint8)EAIBehaviourState::BS_None);
+			DroneBehaviourVariables.StateTaskComplete = false;
+			break;
+	}
 }
 
-void ADroneAIController::EnterObserveState()
+void ADroneAIController::ExitState(EAIBehaviourState OldState)
 {
-	DroneBlackboardComp->SetValueAsEnum(CurrentStateKey, (uint8)EAIBehaviourState::BS_Observe);
-	StateTaskComplete = false;
-}
-
-void ADroneAIController::EnterInvestigateState()
-{
-	ControlledDrone->SetRunning();
-	DroneBlackboardComp->SetValueAsEnum(CurrentStateKey, (uint8)EAIBehaviourState::BS_Investigate);
-	ControlledDrone->SetAudioRangeColour(FLinearColor::Yellow);
-	StateTaskComplete = false;
-}
-
-void ADroneAIController::EnterChaseState()
-{
-	ControlledDrone->SetRunning();
-	DroneBlackboardComp->SetValueAsEnum(CurrentStateKey, (uint8)EAIBehaviourState::BS_Chase);
-	ControlledDrone->SetAudioRangeColour(FLinearColor::Red);
-	StateTaskComplete = false;
-	ControlledDrone->PlayReactionSound(ChasingBeepLoop);
-}
-
-void ADroneAIController::ExitPatrolState()
-{
-}
-
-void ADroneAIController::ExitObserveState()
-{
-}
-
-void ADroneAIController::ExitInvestigateState()
-{
-}
-
-void ADroneAIController::ExitChaseState()
-{
-	ControlledDrone->StopCurrentReactionSound();
+	switch (OldState)
+	{
+	case EAIBehaviourState::BS_Patrol:
+		break;
+	case EAIBehaviourState::BS_Observe:
+		break;
+	case EAIBehaviourState::BS_Alert:
+		break;
+	case EAIBehaviourState::BS_Investigate:
+		break;
+	case EAIBehaviourState::BS_Chase:
+		ControlledDrone->StopCurrentReactionSound();
+		break;
+	}
 }

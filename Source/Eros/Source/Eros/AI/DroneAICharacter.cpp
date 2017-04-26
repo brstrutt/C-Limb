@@ -8,6 +8,7 @@
 #include "DroneAICharacter.h"
 #include "DroneAIController.h"
 #include "EngineUtils.h"
+#include "Misc/ErosGameMode.h"
 #include "Sound/SoundCue.h"
 
 #include <Components/SplineComponent.h>
@@ -19,6 +20,15 @@ ADroneAICharacter::ADroneAICharacter()
  	// Set this character to call Tick() every frame.  You can turn this off to improve performance if you don't need it.
 	PrimaryActorTick.bCanEverTick = false;
 
+	// Initialise the drone's mesh and spring arm
+	DroneSpringArm = CreateDefaultSubobject<USpringArmComponent>(TEXT("Drone Spring Arm"));
+	DroneSpringArm->TargetArmLength = 150.0f;
+	DroneSpringArm->ProbeSize = 75.0f;
+	DroneSpringArm->SetRelativeRotation(FRotator(-90.0f, 0.0f, 0.0f));
+	DroneSpringArm->SetupAttachment(RootComponent);
+	DroneMesh = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("Physical Drone Mesh"));
+	DroneMesh->SetupAttachment(DroneSpringArm);
+
 	// Initialise the sensing component
 	EyesAndEars = CreateDefaultSubobject<UPawnSensingComponent>(TEXT("Pawn Sensing Component"));
 
@@ -26,28 +36,27 @@ ADroneAICharacter::ADroneAICharacter()
 	OccludedRangeDisplay = CreateDefaultSubobject<UDecalComponent>(TEXT("Range of occluded hearing."));
 	OccludedRangeDisplay->SetupAttachment(RootComponent);
 	OccludedRangeDisplay->SetWorldRotation(FRotator(-90.0f, -90.0f, 0.0f));
-	OccludedRangeDisplay->SetWorldScale3D(FVector(0.5f, 6.0f, 6.0f));
-	OccludedRangeDisplay->SetRelativeLocation(FVector(0.0f, 0.0f, -130.0f));	
+	OccludedRangeDisplay->SetWorldScale3D(FVector(0.2f, 1.0f, 1.0f));
+	OccludedRangeDisplay->SetRelativeLocation(FVector(0.0f, 0.0f, -135.0f));
 	ConstructorHelpers::FObjectFinder<UMaterialInterface> SoundRangeTexture(TEXT("Material'/Game/AI/Dron_Hear_Range.Dron_Hear_Range'"));	
 	OccludedRangeDisplay->SetDecalMaterial(SoundRangeTexture.Object);
 
-	// Initialise the default values of the point light
-	MaxHearingRangeDisplay = CreateDefaultSubobject<UPointLightComponent>(TEXT("Range of un-occluded hearing."));
-	MaxHearingRangeDisplay->SetupAttachment(RootComponent);
-	MaxHearingRangeDisplay->SetLightColor(FLinearColor::Red);
-	MaxHearingRangeDisplay->SetRelativeLocation(FVector(0.0f, 0.0f, 122.0f));
-	MaxHearingRangeDisplay->SetIntensity(10.0f);
-	MaxHearingRangeDisplay->SetAttenuationRadius(5000.0f);
-	MaxHearingRangeDisplay->bUseInverseSquaredFalloff = false;
-	MaxHearingRangeDisplay->SetLightFalloffExponent(0.0f);
-	MaxHearingRangeDisplay->ShadowBias = 1.0f;
-	MaxHearingRangeDisplay->ShadowSharpen = 1.0f;
+	//// Initialise the default values of the point light
+	//MaxHearingRangeDisplay = CreateDefaultSubobject<UPointLightComponent>(TEXT("Range of un-occluded hearing."));
+	//MaxHearingRangeDisplay->SetupAttachment(RootComponent);
+	//MaxHearingRangeDisplay->SetRelativeLocation(FVector(0.0f, 0.0f, 122.0f));
+	//MaxHearingRangeDisplay->SetIntensity(10.0f);
+	//MaxHearingRangeDisplay->SetAttenuationRadius(5000.0f);
+	//MaxHearingRangeDisplay->bUseInverseSquaredFalloff = false;
+	//MaxHearingRangeDisplay->SetLightFalloffExponent(0.0f);
+	//MaxHearingRangeDisplay->ShadowBias = 1.0f;
+	//MaxHearingRangeDisplay->ShadowSharpen = 1.0f;
 
 	// Initialise the default values of the spotlight
 	FOVSpotlight = CreateDefaultSubobject<USpotLightComponent>(TEXT("FOV of the AI."));
 	FOVSpotlight->SetupAttachment(RootComponent);
 	FOVSpotlight->SetRelativeLocation(FVector(0.0f, 0.0f, 122.0f));
-	FOVSpotlight->SetIntensity(10.0f);
+	FOVSpotlight->SetIntensity(20.0f);
 	FOVSpotlight->bUseInverseSquaredFalloff = false;
 	FOVSpotlight->SetLightFalloffExponent(0.0f);
 	FOVSpotlight->ShadowBias = 1.0f;
@@ -70,6 +79,7 @@ ADroneAICharacter::ADroneAICharacter()
 
 	WarmupTime = 1.0f;
 	CooldownTime = 1.0f;
+	VerticalSightRange = 250.0f;
 }
 
 void ADroneAICharacter::BeginPlay()
@@ -89,29 +99,34 @@ void ADroneAICharacter::BeginPlay()
 		FOVSpotlight->SetOuterConeAngle(EyesAndEars->GetPeripheralVisionAngle());
 	}
 	
-	// Get the Player Character
-	AErosCharacter* TargetPlayer = nullptr;
-	for (TActorIterator<AErosCharacter> ActorItr(GetWorld()); ActorItr; ++ActorItr)
-	{
-		TargetPlayer = *ActorItr;
-	}
+	//// Get the Player Character
+	//AErosCharacter* TargetPlayer = nullptr;
+	//for (TActorIterator<AErosCharacter> ActorItr(GetWorld()); ActorItr; ++ActorItr)
+	//{
+	//	TargetPlayer = *ActorItr;
+	//}
 
-	if (TargetPlayer)
-	{
-		// Update the Audio range every time a prosthetic is swapped, and once at the start
-		TargetPlayer->OnProstheticSwapped.AddDynamic(this, &ADroneAICharacter::UpdateAudioRanges);
+	//if (TargetPlayer)
+	//{
+	//	// Update the Audio range every time a prosthetic is swapped, and once at the start
+	//	TargetPlayer->OnProstheticSwapped.AddDynamic(this, &ADroneAICharacter::UpdateAudioRanges);
 
-		UpdateAudioRanges(TargetPlayer);
-	}
+	//	UpdateAudioRanges(TargetPlayer);
+	//}
+
+	ScaleAudioRanges(1.0f);
 
 	// Set the audio range decal to use a dynamic material.
 	UMaterialInstanceDynamic* DynamicMaterial = UMaterialInstanceDynamic::Create(OccludedRangeDisplay->GetMaterial(0), this);
 	OccludedRangeDisplay->SetMaterial(0, DynamicMaterial);
 
-	SetAudioRangeColour(FLinearColor::Blue);
+	SetAudioRangeColour(FLinearColor::White);
 
 	AmbientAudioComp->SetSound(PatrollingWhir);
 	AmbientAudioComp->Play();
+
+	InitialLocation = GetActorLocation();
+	InitialRotation = GetActorRotation();
 }
 
 
@@ -130,7 +145,10 @@ void ADroneAICharacter::NoiseDetected(APawn* PawnInstigator, const FVector& Loca
 
 void ADroneAICharacter::CharacterSeen(APawn* PawnInstigator)
 {
-	UE_LOG(LogTemp, Warning, TEXT("CharacterSeen."));
+	//UE_LOG(LogTemp, Warning, TEXT("CharacterSeen."));
+
+	// Don't register detection if Player is too far above AI
+	if (fabs(PawnInstigator->GetActorLocation().Z - GetActorLocation().Z) > VerticalSightRange) return;
 
 	DroneController = Cast<ADroneAIController>(GetController());
 	if (DroneController)
@@ -171,17 +189,20 @@ int ADroneAICharacter::GetNearestSplinePoint()
 void ADroneAICharacter::SetAudioRangeColour(FLinearColor NewColour)
 {
 	Cast<UMaterialInstanceDynamic>(OccludedRangeDisplay->GetMaterial(0))->SetVectorParameterValue(FName(TEXT("BaseColour")), NewColour);
-	MaxHearingRangeDisplay->SetLightColor(NewColour);
+	FOVSpotlight->SetLightColor(NewColour);
+	//MaxHearingRangeDisplay->SetLightColor(NewColour);
 }
 
 void ADroneAICharacter::SetWalking()
 {
 	GetCharacterMovement()->MaxWalkSpeed = WalkingSpeed;
+	GetCharacterMovement()->MaxFlySpeed = WalkingSpeed;
 }
 
 void ADroneAICharacter::SetRunning()
 {
 	GetCharacterMovement()->MaxWalkSpeed = RunningSpeed;
+	GetCharacterMovement()->MaxFlySpeed = RunningSpeed;
 }
 
 void ADroneAICharacter::PlayReactionSound(USoundCue* ReactionSoundClip)
@@ -195,12 +216,51 @@ void ADroneAICharacter::StopCurrentReactionSound()
 	ReactionAudioComp->Stop();
 }
 
-void ADroneAICharacter::UpdateAudioRanges(AErosCharacter* PlayerCharacter)
+void ADroneAICharacter::ResetDroneState()
 {
-	if (!PlayerCharacter) return;
-
-	ScaleAudioRanges(PlayerCharacter->GetMaxVolume());
+	SetActorLocationAndRotation(InitialLocation, InitialRotation);
+	DroneController = Cast<ADroneAIController>(GetController());
+	if (DroneController)
+	{
+		DroneController->ResetDroneState();
+	}
 }
+
+FDroneRespawnState ADroneAICharacter::GetCurrentDroneState()
+{
+	DroneController = Cast<ADroneAIController>(GetController());
+	
+	return FDroneRespawnState
+	{
+		this,
+		GetActorLocation(),
+		GetActorRotation(),
+		DroneController->GetBehaviourState(),
+		DroneController->GetTargetPointLocation(),
+		DroneController->GetDroneBehaviourVariables()
+	};
+}
+
+void ADroneAICharacter::SetCurrentDroneState(FDroneRespawnState NewGameState)
+{
+	SetActorLocationAndRotation(NewGameState.Location, NewGameState.Rotation);
+	
+	DroneController = Cast<ADroneAIController>(GetController());
+
+	DroneController->SetDroneBehaviourVariables(NewGameState.DroneBehaviourVariables);
+	DroneController->SetTargetPointLocation(NewGameState.TargetPointLocation);
+
+	//By changing the state twice the behavior tree is FORCED to reset whatever it is doing.
+	DroneController->SetBehaviourState(EAIBehaviourState::BS_None);
+	DroneController->SetBehaviourState(NewGameState.DroneBehaviourState);
+}
+
+//void ADroneAICharacter::UpdateAudioRanges(AErosCharacter* PlayerCharacter)
+//{
+//	if (!PlayerCharacter) return;
+//
+//	ScaleAudioRanges(PlayerCharacter->GetMaxVolume());
+//}
 
 void ADroneAICharacter::ScaleAudioRanges(float Volume)
 {
@@ -210,8 +270,8 @@ void ADroneAICharacter::ScaleAudioRanges(float Volume)
 	// This sets the scale of the circle on the ground. Yes the Y and Z values control this. Don't question it. This code will hopefully be destroyed with fire anyway.
 	OccludedRangeDisplay->SetWorldScale3D(FVector(OccludedRangeDisplay->GetComponentScale().X, MaxDist / 256.0f, MaxDist / 256.0f));
 
-	// Set the range of the point light representing the unoccluded hearing range of the AI
-	MaxDist = FMath::Sqrt(FMath::Square(EyesAndEars->LOSHearingThreshold) * FMath::Square(Volume));
-	MaxHearingRangeDisplay->SetAttenuationRadius(MaxDist);
+	//// Set the range of the point light representing the unoccluded hearing range of the AI
+	//MaxDist = FMath::Sqrt(FMath::Square(EyesAndEars->LOSHearingThreshold) * FMath::Square(Volume));
+	//MaxHearingRangeDisplay->SetAttenuationRadius(MaxDist);
 }
 

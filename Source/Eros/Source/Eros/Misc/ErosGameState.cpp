@@ -7,5 +7,5 @@ void AErosGameState::BeginPlay()
 	Super::BeginPlay();
 
 	// Initialise game managers.
-	Cast<UErosGameInstance>(GetWorld()->GetGameInstance())->Initialise();
+	//Cast<UErosGameInstance>(GetWorld()->GetGameInstance())->Initialise();
 }

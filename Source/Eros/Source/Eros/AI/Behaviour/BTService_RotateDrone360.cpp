@@ -14,25 +14,23 @@ UBTService_RotateDrone360::UBTService_RotateDrone360(const FObjectInitializer& O
 
 void UBTService_RotateDrone360::TickNode(UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory, float DeltaSeconds)
 {
+	if (!BlackboardKey.IsSet()) { return; }
+
 	// Get the AIDroneCharacter to be rotated.
-	ADroneAIController* DroneController = Cast<ADroneAIController>(OwnerComp.GetAIOwner());
-	if (!DroneController) return;
+	if (ADroneAIController* DroneController = Cast<ADroneAIController>(OwnerComp.GetAIOwner()))
+	{
+		float RotationTime = DroneController->GetDroneBlackboardComp()->GetValueAsFloat(BlackboardKey.SelectedKeyName);
 
-	ADroneAICharacter* DroneCharacter = Cast<ADroneAICharacter>(DroneController->GetPawn());
-	if (!DroneCharacter) return;
+		// If the rotation duration is approximately zero then don't bother rotating
+		if (!FMath::IsNearlyZero(RotationTime))
+		{
+			ADroneAICharacter* DroneCharacter = Cast<ADroneAICharacter>(OwnerComp.GetAIOwner()->GetPawn());
 
-	if (DroneController->GetDroneBlackboardComp() == nullptr) return;
-
-	if (!BlackboardKey.IsSet()) return;
-	
-	float RotationTime = DroneController->GetDroneBlackboardComp()->GetValueAsFloat(BlackboardKey.SelectedKeyName);
-
-	// If the rotation duration is approximately zero then don't bother rotating
-	if (RotationTime < 0.0001f) return;
-
-	FRotator NewRotation = DroneCharacter->GetActorRotation();
-	NewRotation.Yaw += (360.0f / RotationTime) * DeltaSeconds;
-	DroneCharacter->SetActorRotation(NewRotation);
+			FRotator NewRotation = DroneCharacter->GetActorRotation();
+			NewRotation.Yaw += (360.0f / RotationTime) * DeltaSeconds;
+			DroneCharacter->SetActorRotation(NewRotation);
+		}
+	}
 }
 
 

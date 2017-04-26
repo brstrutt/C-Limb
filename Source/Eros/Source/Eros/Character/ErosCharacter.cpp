@@ -4,20 +4,27 @@
 #include "Components/PawnNoiseEmitterComponent.h"
 #include "DrawDebugHelpers.h"
 #include "ErosCharacter.h"
+#include "ErosController.h"
+#include "Misc/ErosGameMode.h"
 #include "Prosthetics/ProstheticSocket.h"
 #include "Prosthetics/Prosthetic.h"
-#include "Prosthetics/Prosthetic_MagnetArm.h"
+#include "Prosthetics/UnattachedProsthetic.h"
 #include "Prosthetics/Prosthetic_GrappleArm.h"
 #include "Sound/SoundCue.h"
+#include "InteractableObjects/Switch/Switch.h"
+#include "InteractableObjects/ProstheticCabinet.h"
+#include "Runtime/Engine/Classes/Kismet/KismetMathLibrary.h"
+
+#include <EngineGlobals.h>
+#include <Runtime/Engine/Classes/Engine/Engine.h>
+
+#define STANDING_CAPSULE_HALF_HEIGHT 93
+#define CROUCHING_CAPSULE_HALF_HEIGHT 63
 
 AErosCharacter::AErosCharacter()
 {
 	// Set size for collision capsule
 	GetCapsuleComponent()->InitCapsuleSize(42.f, 96.0f);
-
-	// set our turn rates for input
-	BaseTurnRate = 45.f;
-	BaseLookUpRate = 45.f;
 
 	// Don't rotate when the controller rotates. Let that just affect the camera.
 	bUseControllerRotationPitch = false;
@@ -45,61 +52,65 @@ AErosCharacter::AErosCharacter()
 	FollowCamera->SetupAttachment(CameraBoom, USpringArmComponent::SocketName); // Attach the camera to the end of the boom and let the boom adjust to match the controller orientation
 	FollowCamera->bUsePawnControlRotation = false; // Camera does not rotate relative to arm
 
-	// Note: The skeletal mesh and anim blueprint references on the Mesh component (inherited from Character) 
-	// are set in the derived blueprint asset named MyCharacter (to avoid direct content references in C++)
-
 	ArmSocket = CreateDefaultSubobject<UProstheticSocket>(TEXT("ArmSocket"));
 	ArmSocket->AttachToComponent(GetMesh(), FAttachmentTransformRules(EAttachmentRule::KeepRelative, false));
 
 	LegSocket = CreateDefaultSubobject<UProstheticSocket>(TEXT("LegSocket"));
 	LegSocket->AttachToComponent(GetMesh(), FAttachmentTransformRules(EAttachmentRule::KeepRelative, false));
 
+	CharacterVoice = CreateDefaultSubobject<UAudioComponent>(TEXT("CharacterVoice"));
+	CharacterVoice->AttachToComponent(RootComponent, FAttachmentTransformRules(EAttachmentRule::KeepRelative, false));
+
 	// Prosthetics pickup zone.
-	ProstheticPickupZone = CreateDefaultSubobject<UBoxComponent>(TEXT("ProstheticsPickupZone"));
-	ProstheticPickupZone->AttachToComponent(RootComponent, FAttachmentTransformRules(EAttachmentRule::KeepRelative, false));
+	InteractZone = CreateDefaultSubobject<USphereComponent>(TEXT("InteractZone"));
+	InteractZone->AttachToComponent(RootComponent, FAttachmentTransformRules(EAttachmentRule::KeepRelative, false));
 
 	// Delegate for moving into prosthetic pickup range.
 	FScriptDelegate ProstheticInRangeDel;
 	ProstheticInRangeDel.BindUFunction(this, FName("OnOverlapBegin"));
-	ProstheticPickupZone->OnComponentBeginOverlap.Add(ProstheticInRangeDel);
+	InteractZone->OnComponentBeginOverlap.Add(ProstheticInRangeDel);
 
 	// Delegate for moving out of prosthetic pickup range.
 	FScriptDelegate ProstheticOutOfRangeDel;
 	ProstheticOutOfRangeDel.BindUFunction(this, FName("OnOverlapEnd"));
-	ProstheticPickupZone->OnComponentEndOverlap.Add(ProstheticOutOfRangeDel);
+	InteractZone->OnComponentEndOverlap.Add(ProstheticOutOfRangeDel);
+
+	// Delegate for overlapping with the character collider
+	GetCapsuleComponent()->OnComponentBeginOverlap.AddDynamic(this, &AErosCharacter::OnCapsuleOverlapBegin);
 
 	// PawnNoiseEmitter is required to generate Noise events that can be detected by the AI
 	LocalNoiseEmitter = CreateDefaultSubobject<UPawnNoiseEmitterComponent>(TEXT("LocalNoiseEmitterComp"));
-
-	// By default crouch is not held
-	//ShouldTimeCrouch = false;
 
 	// Create audio component
 	AudioComponent = CreateDefaultSubobject<UAudioComponent>(TEXT("AudioComponent"));
 	AudioComponent->AttachToComponent(RootComponent, FAttachmentTransformRules(EAttachmentRule::KeepRelative, false));
 
 	// Default footstep volume.
-	FootstepVolume = 0.3f;
-	
+	FootstepVolume = 0.3f;	
 
 	// Delegate for collisions with the core body of the character
 	GetCapsuleComponent()->OnComponentHit.AddDynamic(this, &AErosCharacter::OnCollided);
+
+	PreviousNearestLeg = nullptr;
+	PreviousNearestArm = nullptr;
+	PreviousNearestButton = nullptr;
 }
 
 void AErosCharacter::BeginPlay()
 {
 	Super::BeginPlay();
 
-	// Store all character movement variables that are subject to change here!
-	DefaultCharacterMovement.AirControl = GetCharacterMovement()->AirControl;
-	DefaultCharacterMovement.JumpZVelocity = BaseJumpVelocity;
-	DefaultCharacterMovement.RotationRate = GetCharacterMovement()->RotationRate;
-	DefaultCharacterMovement.MaxWalkSpeed = GetCharacterMovement()->MaxWalkSpeed;
-
 	// Spawn and attach default limbs.
-
 	AttachProsthetic(*GetWorld()->SpawnActor<AProsthetic>(DefaultArm.GetDefaultObject()->GetClass()));
 	AttachProsthetic(*GetWorld()->SpawnActor<AProsthetic>(DefaultLeg.GetDefaultObject()->GetClass()));
+
+	UE_LOG(LogTemp, Warning, TEXT("BeginPlay"));
+}
+
+void AErosCharacter::Say(USoundCue* Voiceline)
+{
+	CharacterVoice->SetSound(Voiceline);
+	CharacterVoice->Play();
 }
 
 void AErosCharacter::MakeProstheticFootstepNoise()
@@ -108,8 +119,8 @@ void AErosCharacter::MakeProstheticFootstepNoise()
 	{
 		// Play the audio clip
 		LegSocket->GetProsthetic()->PlayFootstepSound();
-
-		LocalNoiseEmitter->MakeNoise(this, LegSocket->GetProsthetic()->GetSoundVolume(), GetActorLocation());
+		
+		LocalNoiseEmitter->MakeNoise(this, 1.0f, GetActorLocation());
 	}
 }
 
@@ -121,62 +132,41 @@ void AErosCharacter::MakeRegularFootstepNoise()
 	AudioComponent->SetSound(FootstepSound);
 	AudioComponent->Play();
 
-	LocalNoiseEmitter->MakeNoise(this, FootstepVolume, GetActorLocation());
+	LocalNoiseEmitter->MakeNoise(this, 1.0f, GetActorLocation());
 }
 
-float AErosCharacter::GetMaxVolume()
+float AErosCharacter::GetMaxVolume() const
 {
-	if (LegSocket->HasProsthetic()) return LegSocket->GetProsthetic()->GetSoundVolume();
+	if (LegSocket->HasProsthetic())
+	{
+		return LegSocket->GetProsthetic()->GetSoundVolume();
+	}
 
 	return FootstepVolume;
 }
 
 void AErosCharacter::Tick(float DeltaSeconds)
 {
-	UpdateCharacterState();
+	TickState(DeltaSeconds);
+
 	CheckLedgeGrab();
 	CheckFallDamage();
+	UpdateFallDamage(DeltaSeconds);
 	CheckCameraDistance();
-
-	MovementModeLastTick = GetCharacterMovement()->MovementMode;
-	StateLastTick = CurrentState;
-
-	//if (ShouldTimeCrouch) { ErosCrouchTimer(DeltaSeconds); }
-}
-
-void AErosCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
-{
-	// Set up gameplay key bindings
-	check(PlayerInputComponent);
-
-	PlayerInputComponent->BindAction("Jump", IE_Pressed, this, &AErosCharacter::Jump);
-	PlayerInputComponent->BindAction("Jump", IE_Released, this, &ACharacter::StopJumping);
-	PlayerInputComponent->BindAxis("MoveForward", this, &AErosCharacter::MoveForward);
-	PlayerInputComponent->BindAxis("MoveRight", this, &AErosCharacter::MoveRight);
-	PlayerInputComponent->BindAction("Crouch", IE_Pressed, this, &AErosCharacter::ErosCrouchPressed);
-	//PlayerInputComponent->BindAction("Crouch", IE_Released, this, &AErosCharacter::ErosCrouchReleased);
-
-	// We have 2 versions of the rotation bindings to handle different kinds of devices differently
-	// "turn" handles devices that provide an absolute delta, such as a mouse.
-	// "turnrate" is for devices that we choose to treat as a rate of change, such as an analog joystick
-
-	PlayerInputComponent->BindAxis("Turn", this, &APawn::AddControllerYawInput);
-	PlayerInputComponent->BindAxis("TurnRate", this, &AErosCharacter::TurnAtRate);
-	PlayerInputComponent->BindAxis("LookUp", this, &APawn::AddControllerPitchInput);
-	PlayerInputComponent->BindAxis("LookUpRate", this, &AErosCharacter::LookUpAtRate);
-
-	// Controls for picking up/dropping prosthetics.
-	PlayerInputComponent->BindAction("SwapLegProsthetic", IE_Pressed, this, &AErosCharacter::SwapLegProsthetic);
-	PlayerInputComponent->BindAction("SwapArmProsthetic", IE_Pressed, this, &AErosCharacter::SwapArmProsthetic);
 	
-	// Controls for Left and right click.
-	PlayerInputComponent->BindAction("PrimaryAction", IE_Pressed, this, &AErosCharacter::LeftMouseDown);
-	PlayerInputComponent->BindAction("SecondaryAction", IE_Pressed, this, &AErosCharacter::RightMouseDown);
-	PlayerInputComponent->BindAction("PrimaryAction", IE_Released, this, &AErosCharacter::LeftMouseUp);
-	PlayerInputComponent->BindAction("SecondaryAction", IE_Released, this, &AErosCharacter::RightMouseUp);
+	UpdateInteractableHighlights();
 
-	// Interacting with interactable objects.
-	PlayerInputComponent->BindAction("Interact", IE_Pressed, this, &AErosCharacter::Interact);
+	UpdateCharacterMovement(GetModifiedCharacterMovement(DefaultCharacterMovement));
+
+	if (CurrentState == ECharacterState::CS_Aiming)
+	{
+		FRotator DeltaRotator = UKismetMathLibrary::NormalizedDeltaRotator(FRotator(0,GetControlRotation().Yaw,0),FRotator(0,GetActorRotation().Yaw,0));
+
+		if (FMath::Abs(DeltaRotator.Yaw)>=80)
+		{
+			AddActorWorldRotation(FMath::RInterpTo(FRotator(0,0,0), DeltaRotator, DeltaSeconds, 5));
+		}
+	}
 }
 
 void AErosCharacter::Jump()
@@ -184,15 +174,19 @@ void AErosCharacter::Jump()
 	switch (CurrentState)
 	{
 	case ECharacterState::CS_Hanging:
-		if (HasProstheticAttached(AProsthetic_BasicArm::StaticClass())|| HasProstheticAttached(AProsthetic_MagnetArm::StaticClass()) || HasProstheticAttached(AProsthetic_GrappleArm::StaticClass()))
+		if (HasProstheticOfType(EProstheticType::PT_Arm))
 		{
-			GetCharacterMovement()->SetMovementMode(MOVE_Flying);
-			CurrentState = ECharacterState::CS_Climbing;
-			UE_LOG(LogTemp, Warning, TEXT("state changed to climbing"));
+			ChangeState(ECharacterState::CS_Climbing);
 		}
 		break;
 	case ECharacterState::CS_Crawling:
-		// cant jump while crawling
+	case ECharacterState::CS_LegOff:
+	case ECharacterState::CS_LegOn:
+	case ECharacterState::CS_ArmOff:
+	case ECharacterState::CS_ArmOn:
+	case ECharacterState::CS_StandUp:
+	case ECharacterState::CS_StartCrawl:
+		// cant jump when laying on floor
 		break;
 	default:
 		bPressedJump = true;
@@ -201,221 +195,166 @@ void AErosCharacter::Jump()
 	}
 }
 
-void AErosCharacter::ErosCrouchPressed()
+void AErosCharacter::Crouch(bool bClientSimulation)
 {
-	//StateWhenCrouchPressed = CurrentState;
+	switch (CurrentState)
+	{
+	case ECharacterState::CS_Hanging:
+		ChangeState(ECharacterState::CS_Dropping);
+		break;
+
+	case ECharacterState::CS_OnGround:
+		ChangeState(ECharacterState::CS_Crouching);
+		break;
+
+	case ECharacterState::CS_Crouching:
+		FHitResult outhit;
+		FVector CapsuleCentre = GetActorLocation() - FVector(0, 0, CROUCHING_CAPSULE_HALF_HEIGHT) + FVector(0, 0, STANDING_CAPSULE_HALF_HEIGHT);
+		FCollisionShape shape = GetCapsuleComponent()->GetCollisionShape();
+		shape.Capsule.HalfHeight = STANDING_CAPSULE_HALF_HEIGHT;
+
+		if (!GetWorld()->SweepSingleByObjectType(outhit, CapsuleCentre, CapsuleCentre, FQuat(0,0,0,1), FCollisionObjectQueryParams(ECollisionChannel::ECC_WorldStatic), shape))// || GetWorld()->SweepSingleByChannel(outhit, CapsuleCentre, CapsuleCentre, FQuat(0, 0, 0, 1), ECollisionChannel::ECC_GameTraceChannel5, shape))
+		{
+			ChangeState(ECharacterState::CS_OnGround);
+		}
+		break;
+	}
+}
+
+void AErosCharacter::MoveForward(float Value)
+{
+	if (!Value) { return; }
 
 	switch (CurrentState)
 	{
 	case ECharacterState::CS_Hanging:
-		GetCharacterMovement()->SetMovementMode(MOVE_Falling);
-		CurrentState = ECharacterState::CS_Dropping;
-		UE_LOG(LogTemp, Warning, TEXT("State Changed to Dropping"));
+		if (HasProstheticOfType(EProstheticType::PT_Arm) && Value > 0.5)
+		{
+			ChangeState(ECharacterState::CS_Climbing);
+		}
 		break;
-
-	case ECharacterState::CS_OnGround:
-		CurrentState = ECharacterState::CS_Crouching;
-		UE_LOG(LogTemp, Warning, TEXT("State Changed to Crouching"));
+	case ECharacterState::CS_LegOff:
+	case ECharacterState::CS_LegOn:
+	case ECharacterState::CS_ArmOff:
+	case ECharacterState::CS_ArmOn:
+	case ECharacterState::CS_StandUp:
+	case ECharacterState::CS_StartCrawl:
+	case ECharacterState::CS_CraneHang:
 		break;
-
-	case ECharacterState::CS_Crouching:
-		CurrentState = ECharacterState::CS_OnGround;
-		UE_LOG(LogTemp, Warning, TEXT("State Changed to OnGround"));
-		break;
-
-	/*case ECharacterState::CS_Crawling:
-		CurrentState = ECharacterState::CS_Crouching;
-		UE_LOG(LogTemp, Warning, TEXT("State Changed to Crouching"));
-		break;*/
 
 	default:
+		// find out which way is forward
+		const FRotator Rotation = Controller->GetControlRotation();
+		const FRotator YawRotation(0.0f, Rotation.Yaw, 0.0f);
+		// get forward vector
+		const FVector Direction = FRotationMatrix(YawRotation).GetUnitAxis(EAxis::X);
+		AddMovementInput(Direction, Value);
 		break;
-	}
 
-	//CrouchTimer = 0;
-	//ShouldTimeCrouch = true;
-}
-//void AErosCharacter::ErosCrouchReleased()
-//{
-//	if (CurrentState == ECharacterState::CS_Crouching)
-//	{
-//		if (CrouchTimer <= 0.5f)
-//		{
-//			//tapped
-//			if (StateWhenCrouchPressed == ECharacterState::CS_Crouching)
-//			{
-//				CurrentState = ECharacterState::CS_OnGround;
-//				UE_LOG(LogTemp, Warning, TEXT("State Changed to OnGround"));
-//			}
-//		}
-//		else
-//		{
-//			// held, should be dealt with
-//		}
-//	}
-//
-//	CrouchTimer = 0;
-//	ShouldTimeCrouch = false;
-//}
-//void AErosCharacter::ErosCrouchTimer(float DeltaSeconds)
-//{
-//	CrouchTimer+=DeltaSeconds;
-//
-//	if (CurrentState == ECharacterState::CS_Crouching && CrouchTimer > 0.5f)
-//	{
-//		switch (StateWhenCrouchPressed)
-//		{
-//		case ECharacterState::CS_OnGround:
-//		case ECharacterState::CS_Crouching:
-//			CurrentState = ECharacterState::CS_Crawling;
-//			UE_LOG(LogTemp, Warning, TEXT("State Changed to Crawling"));
-//			break;
-//		case ECharacterState::CS_Crawling:
-//			CurrentState = ECharacterState::CS_OnGround;
-//			UE_LOG(LogTemp, Warning, TEXT("State Changed to OnGround"));
-//			break;
-//		}
-//	}
-//}
-
-void AErosCharacter::MoveForward(float Value)
-{
-	if ((Controller != NULL) && (Value != 0.0f))
-	{
-		// Apply prosthetic modifiers.
-		UpdateCharacterMovement(GetModifiedCharacterMovement(DefaultCharacterMovement));
-
-		switch (CurrentState)
-		{
-		case ECharacterState::CS_Hanging:
-			// Character should not be able to move if hanging from a ledge, atm
-			break;
-		default:
-			// find out which way is forward
-			const FRotator Rotation = Controller->GetControlRotation();
-			const FRotator YawRotation(0.0f, Rotation.Yaw, 0.0f);
-			// get forward vector
-			const FVector Direction = FRotationMatrix(YawRotation).GetUnitAxis(EAxis::X);
-			AddMovementInput(Direction, Value);
-		}
 	}
 }
 
 void AErosCharacter::MoveRight(float Value)
 {
-	if ((Controller != NULL) && (Value != 0.0f))
-	{
-		// Apply prosthetic modifiers.
-		UpdateCharacterMovement(GetModifiedCharacterMovement(DefaultCharacterMovement));
+	if (!Value) { return; }
 
-		switch (CurrentState)
-		{
-		case ECharacterState::CS_Hanging:
-			// Character should not be able to move if hanging from a ledge
-			break;
-		default:
-			// find out which way is right
-			const FRotator Rotation = Controller->GetControlRotation();
-			const FRotator YawRotation(0.0f, Rotation.Yaw, 0.0f);
-			// get right vector 
-			const FVector Direction = FRotationMatrix(YawRotation).GetUnitAxis(EAxis::Y);
-			// add movement in that direction
-			AddMovementInput(Direction, Value);
-		}
+	switch (CurrentState)
+	{
+	case ECharacterState::CS_Hanging:
+	case ECharacterState::CS_LegOff:
+	case ECharacterState::CS_LegOn:
+	case ECharacterState::CS_ArmOff:
+	case ECharacterState::CS_ArmOn:
+	case ECharacterState::CS_StandUp:
+	case ECharacterState::CS_StartCrawl:
+	case ECharacterState::CS_CraneHang:
+		break;
+
+	default:
+		// find out which way is right
+		const FRotator Rotation = Controller->GetControlRotation();
+		const FRotator YawRotation(0.0f, Rotation.Yaw, 0.0f);
+		// get right vector 
+		const FVector Direction = FRotationMatrix(YawRotation).GetUnitAxis(EAxis::Y);
+		// add movement in that direction
+		AddMovementInput(Direction, Value);
+		break;
 	}
 }
 
-void AErosCharacter::LeftMouseDown()
+void AErosCharacter::PrimaryActionBegin()
 {
 	// Only arm prosthetics have a primary action.
-	if (ArmSocket->HasProsthetic())
+	if (ArmSocket->HasProsthetic() && CanUseProsthetic())
 	{
 		ArmSocket->GetProsthetic()->PrimaryActionBegin();
 	}
-
 }
 
-void AErosCharacter::RightMouseDown()
+void AErosCharacter::SecondaryActionBegin()
 {
 	// Only arm prosthetics have a secondary action.
-	if (ArmSocket->HasProsthetic())
+	if (ArmSocket->HasProsthetic() && CanUseProsthetic())
 	{
 		ArmSocket->GetProsthetic()->SecondaryActionBegin();
 	}
-
 }
 
-void AErosCharacter::LeftMouseUp()
+void AErosCharacter::PrimaryActionEnd()
 {
-	if (ArmSocket->HasProsthetic())
+	if (ArmSocket->HasProsthetic() & CanUseProsthetic())
 	{
 		ArmSocket->GetProsthetic()->PrimaryActionEnd();
 	}
-
 }
 
-void AErosCharacter::RightMouseUp()
+void AErosCharacter::SecondaryActionEnd()
 {
-	if (ArmSocket->HasProsthetic())
+	if (ArmSocket->HasProsthetic() && CanUseProsthetic())
 	{
 		ArmSocket->GetProsthetic()->SecondaryActionEnd();
 	}
 }
 
-void AErosCharacter::TurnAtRate(float Rate)
-{
-	// Calculate delta for this frame from the rate information
-	AddControllerYawInput(Rate * BaseTurnRate * GetWorld()->GetDeltaSeconds());
-}
-
-void AErosCharacter::LookUpAtRate(float Rate)
-{
-	// Calculate delta for this frame from the rate information
-	AddControllerPitchInput(Rate * BaseLookUpRate * GetWorld()->GetDeltaSeconds());
-}
-
-bool AErosCharacter::HasProstheticAttached(UClass* Class) const
+bool AErosCharacter::HasProstheticAttached(UClass const* Class) const
 {
 	return ((ArmSocket->HasProsthetic() && ArmSocket->GetProsthetic()->IsA(Class)) || (LegSocket->HasProsthetic() && LegSocket->GetProsthetic()->IsA(Class)));
 }
 
-bool AErosCharacter::HasFreeSocketOfType(EProstheticType Type) const
+bool AErosCharacter::HasProstheticOfType(EProstheticType Type) const
 {
-	return ((ArmSocket->GetProstheticType() == Type && !ArmSocket->HasProsthetic()) || (LegSocket->GetProstheticType() == Type && !LegSocket->HasProsthetic()));
+	return ((ArmSocket->GetProstheticType() == Type && ArmSocket->HasProsthetic()) || (LegSocket->GetProstheticType() == Type && LegSocket->HasProsthetic()));
 }
 
 AProsthetic* AErosCharacter::DetachProstheticOfType(EProstheticType Type)
 {
 	AProsthetic* Prosthetic = nullptr;
 
-	if (CurrentState == ECharacterState::CS_OnGround)
+	if (ArmSocket->GetProstheticType() == Type)
 	{
-		if (ArmSocket->GetProstheticType() == Type)
-		{
-			Prosthetic = ArmSocket->DetachProsthetic();
-		}
-		else if (LegSocket->GetProstheticType() == Type)
-		{
-			Prosthetic = LegSocket->DetachProsthetic();
-		}
+		Prosthetic = ArmSocket->DetachProsthetic();
+	}
+	else if (LegSocket->GetProstheticType() == Type)
+	{
+		Prosthetic = LegSocket->DetachProsthetic();
+	}
 
-		if (Prosthetic != nullptr)
-		{
-			NearbyInteractables.Add(Prosthetic);
-		}
+	if (Prosthetic != nullptr)
+	{
+		NearbyInteractables.Add(Prosthetic);
 	}
 
 	return Prosthetic;
 }
 
-AProsthetic* AErosCharacter::GetClosestProstheticOfType(EProstheticType Type)
+AUnattachedProsthetic* AErosCharacter::GetClosestProstheticOfType(EProstheticType Type)
 {
 	float ClosestDistance = FLT_MAX;
-	AProsthetic* ClosestProsthetic = nullptr;
+	AUnattachedProsthetic* ClosestProsthetic = nullptr;
 
-	for (IInteractableInterface* Interactable : NearbyInteractables)
+	for (AInteractableActor* Interactable : NearbyInteractables)
 	{
-		if (AProsthetic* Prosthetic = Cast<AProsthetic>(Interactable))
+		if (AUnattachedProsthetic* Prosthetic = Cast<AUnattachedProsthetic>(Interactable))
 		{
 			float Distance = FVector::Dist(GetActorLocation(), Prosthetic->GetActorLocation());
 
@@ -429,14 +368,14 @@ AProsthetic* AErosCharacter::GetClosestProstheticOfType(EProstheticType Type)
 	return ClosestProsthetic;
 }
 
-IInteractableInterface* AErosCharacter::GetClosestInteractable()
+AInteractableActor* AErosCharacter::GetClosestInteractable() const
 {
 	float ClosestDistance = FLT_MAX;
-	IInteractableInterface* ClosestsInteractable = nullptr;
+	AInteractableActor* ClosestsInteractable = nullptr;
 
-	for (IInteractableInterface* Interactable : NearbyInteractables)
+	for (AInteractableActor* Interactable : NearbyInteractables)
 	{
-		float Distance = FVector::Dist(GetActorLocation(), Interactable->GetLocation());
+		float Distance = FVector::Dist(GetActorLocation(), Interactable->GetActorLocation());
 
 		if ((ClosestsInteractable == nullptr || (Distance < ClosestDistance)))
 		{
@@ -449,42 +388,274 @@ IInteractableInterface* AErosCharacter::GetClosestInteractable()
 
 void AErosCharacter::SwapLegProsthetic()
 {
-	// Find the closest leg prosthetic
-	AProsthetic* LegProsthetic = GetClosestProstheticOfType(EProstheticType::PT_Leg);
+	if (CurrentState != ECharacterState::CS_OnGround && CurrentState != ECharacterState::CS_Crawling) { return; }
 
-	// If there is no free socket, detach the current prosthetic
-	if (!HasFreeSocketOfType(EProstheticType::PT_Leg))
+	// see if a new prosthetic is near
+	NewLegProstheticToAttach = GetClosestProstheticOfType(EProstheticType::PT_Leg);
+
+	if (NewLegProstheticToAttach != nullptr)
 	{
-		DetachProstheticOfType(EProstheticType::PT_Leg)->GetMesh()->SetVisibility(true, true);
+		NewLegProstheticToAttach->SetInteractable(false);
+
+		if (NewLegProstheticToAttach == DroppedLegProsthetic)
+		{
+			DroppedLegProsthetic = nullptr;
+		}
+
+		if (HasProstheticOfType(EProstheticType::PT_Leg))
+		{
+			ChangeState(ECharacterState::CS_LegOff);
+		}
+		else
+		{
+			AttachLegProsthetic();
+		}
+	}
+}
+void AErosCharacter::DetachLegProsthetic()
+{
+	if (HasProstheticOfType(EProstheticType::PT_Leg))
+	{
+		AProsthetic* LegProsthetic = DetachProstheticOfType(EProstheticType::PT_Leg);
+
+		LegProstheticToRemove = GetWorld()->SpawnActor<AUnattachedProsthetic>(LegProsthetic->GetUnattachedProsthetic().GetDefaultObject()->GetClass());
+
+		LegProstheticToRemove->CanSimulatePhysics(false);
+		LegProstheticToRemove->AttachToComponent(GetMesh(), FAttachmentTransformRules::SnapToTargetIncludingScale, FName("HeldLegSocket"));
+		LegProstheticToRemove->SetUIVisible(false);
+		LegProstheticToRemove->SetInteractable(false);
+
+		LegProsthetic->Destroy();
+	}
+	else
+	{
+		AttachLegProsthetic();
+	}
+}
+void AErosCharacter::LegProstheticDetached()
+{
+	// drop old prosthetic
+	if (LegProstheticToRemove != nullptr)
+	{
+		DroppedLegProsthetic = Cast<AUnattachedProsthetic>(LegProstheticToRemove);
+		DroppedLegProsthetic->CanSimulatePhysics(true);
+		DroppedLegProsthetic->SetActorLocation(GetActorLocation() + FVector(0, 0, 20));
+		DroppedLegProsthetic->OnDetached();
+
+		LegProstheticToRemove->DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
+		LegProstheticToRemove = nullptr;
 	}
 
-	// Attach new prosthetic, if one is available
-	if (LegProsthetic != nullptr)
+	// attach a new prosthetic or switch to crawling?
+	if (NewLegProstheticToAttach != nullptr)
 	{
+		// attach new prosthetic
+		AttachLegProsthetic();
+	}
+	else
+	{
+		ChangeState(ECharacterState::CS_StartCrawl);
+	}
+}
+void AErosCharacter::AttachLegProsthetic()
+{
+	if (NewLegProstheticToAttach != nullptr)
+	{
+		// attach prosthetic to hand bone
+		NewLegProstheticToAttach->CanSimulatePhysics(false);
+		NewLegProstheticToAttach->AttachToComponent(GetMesh(), FAttachmentTransformRules::SnapToTargetIncludingScale, FName("HeldLegSocket"));
+
+		ChangeState(ECharacterState::CS_LegOn);
+	}
+}
+void AErosCharacter::LegProstheticAttached()
+{
+	AActor* HeldLeg = GetHeldProstheticOfType(EProstheticType::PT_Leg);
+	if (HeldLeg != nullptr)
+	{		
+		// Re-activate the dropped prosthetic
+		if (DroppedLegProsthetic != nullptr)
+		{
+			DroppedLegProsthetic->SetInteractable(true);
+		}
+
+		AUnattachedProsthetic* ProstheticBeingHeld = Cast<AUnattachedProsthetic>(HeldLeg);
+		ProstheticBeingHeld->OnAttached();
+
+		// Is required in OnAttached, must be set null after.
+		DroppedLegProsthetic = nullptr;
+
+		UClass* ProstheticToAttach = ProstheticBeingHeld->GetProsthetic().GetDefaultObject()->GetClass();
+
+		// spawn and attach new prosthetic
+		AProsthetic * LegProsthetic = GetWorld()->SpawnActor<AProsthetic>(ProstheticToAttach);
 		AttachProsthetic(*LegProsthetic);
-		LegProsthetic->GetMesh()->SetVisibility(!bIsCameraTooClose, true);
-	}
+		//LegProsthetic->GetMesh()->SetVisibility(!bIsCameraTooClose);
+		LegProsthetic->SetMeshVisibility(!bIsCameraTooClose);
 
-	OnProstheticSwapped.Broadcast(this);
+		// delete the unattached version
+		NearbyInteractables.Remove(ProstheticBeingHeld);
+		PreviousNearestLeg = nullptr;
+		ProstheticBeingHeld->Destroy();
+
+		NewLegProstheticToAttach = nullptr;
+		OnProstheticSwapped.Broadcast(this, LegProsthetic);
+		ChangeState(ECharacterState::CS_StandUp);
+	}
 }
 
 void AErosCharacter::SwapArmProsthetic()
 {
-	// Find the closest arm prosthetic
-	AProsthetic* ArmProsthetic = GetClosestProstheticOfType(EProstheticType::PT_Arm);
+	if (CurrentState != ECharacterState::CS_OnGround && CurrentState != ECharacterState::CS_Crawling) { return; }
 
-	// If there is no free socket, detach the current prosthetic
-	if (!HasFreeSocketOfType(EProstheticType::PT_Arm))
+	// see if a new prosthetic is near
+	NewArmProstheticToAttach = GetClosestProstheticOfType(EProstheticType::PT_Arm);
+
+	if (NewArmProstheticToAttach != nullptr)
 	{
-		DetachProstheticOfType(EProstheticType::PT_Arm)->GetMesh()->SetVisibility(true, true);		
+		NewArmProstheticToAttach->SetInteractable(false);
+
+		if (NewArmProstheticToAttach == DroppedArmProsthetic)
+		{
+			NewArmProstheticToAttach = nullptr;
+		}
+
+		if (HasProstheticOfType(EProstheticType::PT_Arm))
+		{
+			ChangeState(ECharacterState::CS_ArmOff);
+		}
+		else
+		{
+			AttachArmProsthetic();
+		}
+	}
+}
+void AErosCharacter::DetachArmProsthetic()
+{
+	if (HasProstheticOfType(EProstheticType::PT_Arm))
+	{
+		AProsthetic* ArmProsthetic = DetachProstheticOfType(EProstheticType::PT_Arm);
+
+		ArmProstheticToRemove = GetWorld()->SpawnActor<AUnattachedProsthetic>(ArmProsthetic->GetUnattachedProsthetic().GetDefaultObject()->GetClass());
+
+		ArmProstheticToRemove->CanSimulatePhysics(false);
+		ArmProstheticToRemove->AttachToComponent(GetMesh(), FAttachmentTransformRules::SnapToTargetIncludingScale, FName("HeldArmSocket"));
+		ArmProstheticToRemove->SetUIVisible(false);
+		ArmProstheticToRemove->SetInteractable(false);
+
+		ArmProsthetic->Destroy();
+	}
+	else
+	{
+		AttachArmProsthetic();
+	}
+}
+void AErosCharacter::ArmProstheticDetached()
+{
+	// drop old prosthetic
+	if (ArmProstheticToRemove != nullptr)
+	{
+		DroppedArmProsthetic = Cast<AUnattachedProsthetic>(ArmProstheticToRemove);
+		DroppedArmProsthetic->CanSimulatePhysics(true);
+		DroppedArmProsthetic->SetActorLocation(GetActorLocation()+FVector(0,0,20));
+		DroppedArmProsthetic->OnDetached();
+
+		ArmProstheticToRemove->DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
+		ArmProstheticToRemove = nullptr;
 	}
 
-	// Attach new prosthetic, if one is available
-	if (ArmProsthetic != nullptr)
+	// attach a new prosthetic?
+	if (NewArmProstheticToAttach != nullptr)
 	{
+		// attach new prosthetic
+		AttachArmProsthetic();
+	}
+	else
+	{
+		if (HasProstheticOfType(EProstheticType::PT_Leg))
+		{
+			ChangeState(ECharacterState::CS_StandUp);
+		}
+		else
+		{
+			ChangeState(ECharacterState::CS_StartCrawl);
+		}
+	}
+}
+void AErosCharacter::AttachArmProsthetic()
+{
+	if (NewArmProstheticToAttach != nullptr)
+	{
+		// attach prosthetic to hand bone
+		NewArmProstheticToAttach->CanSimulatePhysics(false);
+		NewArmProstheticToAttach->AttachToComponent(GetMesh(), FAttachmentTransformRules::SnapToTargetIncludingScale, FName("HeldArmSocket"));
+
+		ChangeState(ECharacterState::CS_ArmOn);
+	}
+}
+void AErosCharacter::ArmProstheticAttached()
+{
+	AActor* HeldArm = GetHeldProstheticOfType(EProstheticType::PT_Arm);
+	if (HeldArm != nullptr)
+	{
+		// Re-activate the dropped prosthetic
+		if (DroppedArmProsthetic != nullptr)
+		{
+			DroppedArmProsthetic->SetInteractable(true);
+		}
+
+		AUnattachedProsthetic* ProstheticBeingHeld = Cast<AUnattachedProsthetic>(HeldArm);
+		ProstheticBeingHeld->OnAttached();
+
+		// Is required in OnAttached, must be set null after.
+		DroppedArmProsthetic = nullptr;
+
+		UClass* ProstheticToAttach = ProstheticBeingHeld->GetProsthetic().GetDefaultObject()->GetClass();
+		
+		// spawn and attach new prosthetic
+		AProsthetic * ArmProsthetic = GetWorld()->SpawnActor<AProsthetic>(ProstheticToAttach);
 		AttachProsthetic(*ArmProsthetic);
-		ArmProsthetic->GetMesh()->SetVisibility(!bIsCameraTooClose, true);
+		//ArmProsthetic->GetMesh()->SetVisibility(!bIsCameraTooClose);
+		ArmProsthetic->SetMeshVisibility(!bIsCameraTooClose);
+
+		// delete the unattached version
+		NearbyInteractables.Remove(ProstheticBeingHeld);
+		PreviousNearestArm = nullptr;
+		ProstheticBeingHeld->Destroy();
+
+		NewArmProstheticToAttach = nullptr;
+		OnProstheticSwapped.Broadcast(this, ArmProsthetic);
 	}
+
+	if (HasProstheticOfType(EProstheticType::PT_Leg))
+	{
+		ChangeState(ECharacterState::CS_StandUp);
+	}
+	else
+	{
+		ChangeState(ECharacterState::CS_StartCrawl);
+	}
+}
+
+AActor* AErosCharacter::GetHeldProstheticOfType(EProstheticType ProstheticType)
+{
+	AActor* HeldProsthetic = nullptr;
+	for (int i = 0; i<GetMesh()->GetAttachChildren().Num(); i++)
+	{
+		USceneComponent * ComponentToCheck = GetMesh()->GetAttachChildren()[i];
+		AUnattachedProsthetic * CheckIfProsthetic = Cast<AUnattachedProsthetic>(ComponentToCheck->GetOwner());
+		if (CheckIfProsthetic != nullptr && CheckIfProsthetic->GetType() == ProstheticType)
+		{
+			HeldProsthetic = ComponentToCheck->GetOwner();
+			i = GetMesh()->GetAttachChildren().Num();
+		}
+	}
+	return HeldProsthetic;
+}
+
+bool AErosCharacter::CanUseProsthetic() const
+{
+	return CurrentState == ECharacterState::CS_OnGround || CurrentState == ECharacterState::CS_Aiming;
 }
 
 bool AErosCharacter::AttachProsthetic(AProsthetic& Prosthetic)
@@ -492,6 +663,10 @@ bool AErosCharacter::AttachProsthetic(AProsthetic& Prosthetic)
 	if (ArmSocket->TryAttachProsthetic(Prosthetic) || LegSocket->TryAttachProsthetic(Prosthetic))
 	{
 		NearbyInteractables.Remove(&Prosthetic);
+
+		// Apply prosthetic modifiers.
+		UpdateCharacterMovement(GetModifiedCharacterMovement(DefaultCharacterMovement));
+
 		return true;
 	}
 
@@ -501,78 +676,53 @@ bool AErosCharacter::AttachProsthetic(AProsthetic& Prosthetic)
 void AErosCharacter::CheckLedgeGrab()
 {
 	// Note: these may need to use the Unscaled height and radius...
-	float CapsuleHalfHeight = GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
-	float CapsuleRadius = GetCapsuleComponent()->GetScaledCapsuleRadius();
-
-	FVector LedgeImpactPoint = FVector::ZeroVector;
-	FVector WallImpactPoint = FVector::ZeroVector;
-	FVector WallImpactNormal = FVector::ZeroVector;
+	float const CapsuleHalfHeight = GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+	float const CapsuleRadius = GetCapsuleComponent()->GetScaledCapsuleRadius();
 
 	// ledge tracing variables
-	FHitResult TracerResult;
-	FVector StartWallTrace = GetActorLocation() + FVector(0, 0, GetCapsuleComponent()->GetScaledCapsuleHalfHeight() / 2);
-	FVector EndWallTrace = StartWallTrace + GetActorForwardVector() * 50.0f;
-	ECollisionChannel Channel = ECollisionChannel::ECC_GameTraceChannel2;
-	FCollisionQueryParams Query;
-	FCollisionResponseParams Response;
 	FCollisionShape TracerShape = GetCapsuleComponent()->GetCollisionShape();
 	TracerShape.Capsule.HalfHeight = CapsuleHalfHeight / 2;
 
-#if false
-	DrawDebugCapsule(GetWorld(), StartWallTrace, TracerShape.Capsule.HalfHeight, TracerShape.Capsule.Radius, FQuat(0.0f, 0.0f, 0.0f, 1.0f), FColor(255, 0, 0), false, -1, 0, 1.0f);
-	DrawDebugCapsule(GetWorld(), (StartWallTrace+EndWallTrace)/2, TracerShape.Capsule.HalfHeight, TracerShape.Capsule.Radius, FQuat(0.0f, 0.0f, 0.0f, 1.0f), FColor(255, 0, 0), false, -1, 0, 1.0f);
-	DrawDebugCapsule(GetWorld(), EndWallTrace, TracerShape.Capsule.HalfHeight, TracerShape.Capsule.Radius, FQuat(0.0f, 0.0f, 0.0f, 1.0f), FColor(255, 0, 0), false, -1, 0, 1.0f);
-#endif
+	FVector const StartWallTrace = GetActorLocation() + FVector(0, 0, GetCapsuleComponent()->GetScaledCapsuleHalfHeight() / 2);
+	FVector const EndWallTrace = StartWallTrace + GetActorForwardVector() * 50.0f;
+	ECollisionChannel const Channel = ECollisionChannel::ECC_GameTraceChannel2;
+
+	FHitResult TracerResult;
+	FCollisionQueryParams Query;
+	FCollisionResponseParams Response;
 
 	// wall tracing
-	if (GetWorld()->SweepSingleByChannel(TracerResult, StartWallTrace, EndWallTrace, FQuat(0,0,0,1), Channel, TracerShape, Query, Response) && 
-		(GetCharacterMovement()->Velocity.Size() > 300 || CurrentState==ECharacterState::CS_WallRunVert) )
-	{
-#if false
-		DrawDebugCapsule(GetWorld(), TracerResult.ImpactPoint, CapsuleHalfHeight, CapsuleRadius, FQuat(0.0f, 0.0f, 0.0f, 1.0f), FColor(0, 255, 0), false, -1, 0, 1.0f);
-#endif
-		
-		WallImpactPoint = TracerResult.ImpactPoint;
-		WallImpactNormal = TracerResult.ImpactNormal;
+	if (GetWorld()->SweepSingleByChannel(TracerResult, StartWallTrace, EndWallTrace, FQuat(0.0f, 0.0f, 0.0f, 1.0f), Channel, TracerShape, Query, Response)) // && 
+		/* (GetCharacterMovement()->Velocity.Size() > 300.0f || CurrentState == ECharacterState::CS_WallRunVert || CurrentState == ECharacterState::CS_InAir) ) */
+	{		
+		FVector const WallImpactPoint = TracerResult.ImpactPoint;
+		FVector const WallImpactNormal = TracerResult.ImpactNormal;
 
-		FVector StartLedgeTrace = TracerResult.ImpactPoint + FVector(0.0f, 0.0f, 500.0f) + GetActorForwardVector();
-		FVector EndLedgeTrace = StartLedgeTrace - FVector(0.0f, 0.0f, 550.0f);
-
-#if false
-		DrawDebugLine(GetWorld(), StartLedgeTrace, EndLedgeTrace, FColor(255, 0, 0), false, -1, 0, 12.333);
-#endif
+		FVector const StartLedgeTrace = TracerResult.ImpactPoint + FVector(0.0f, 0.0f, 500.0f) + GetActorForwardVector();
+		FVector const EndLedgeTrace = StartLedgeTrace - FVector(0.0f, 0.0f, 550.0f);
 
 		// ledge tracing
 		if (GetWorld()->LineTraceSingleByChannel(TracerResult, StartLedgeTrace, EndLedgeTrace, Channel, Query, Response))
 		{
-#if false
-			DrawDebugCapsule(GetWorld(), TracerResult.ImpactPoint, CapsuleHalfHeight, CapsuleRadius, FQuat(0.0f, 0.0f, 0.0f, 1.0f), FColor(0, 255, 0), false, -1, 0, 1.0f);
-#endif
-
-			LedgeImpactPoint = TracerResult.ImpactPoint;
+			FVector const LedgeImpactPoint = TracerResult.ImpactPoint;
 
 			// calculate distance from the ledge
-			float DistFromLedge = (LedgeImpactPoint - GetActorLocation() + FVector(0, CapsuleHalfHeight, 0)).Size();
+			float const DistFromLedge = (LedgeImpactPoint - GetActorLocation() + FVector(0, CapsuleHalfHeight, 0)).Size();
 
 			// if ledge is just above character head, jump and grab it
-			if (DistFromLedge >= CapsuleHalfHeight && DistFromLedge <= CapsuleHalfHeight * 2 && (CurrentState == ECharacterState::CS_OnGround || CurrentState == ECharacterState::CS_InAir || CurrentState == ECharacterState::CS_WallRunVert))
+			if (DistFromLedge >= CapsuleHalfHeight && DistFromLedge <= CapsuleHalfHeight * 2.0f && (CurrentState == ECharacterState::CS_OnGround || CurrentState == ECharacterState::CS_InAir))
 			{
-				GetCharacterMovement()->SetMovementMode(MOVE_Custom);
-				CurrentState = ECharacterState::CS_Hanging;
+				ChangeState(ECharacterState::CS_Hanging);
 
-				if (TracerResult.GetComponent()->ComponentHasTag("Wall"))
-				{
-					LedgeGrabTag = "Wall";
-					UE_LOG(LogTemp, Log, TEXT("Tag set to Wall"));
-				}
-				else if (TracerResult.GetComponent()->ComponentHasTag("Ledge"))
+				if (TracerResult.GetComponent()->ComponentHasTag("Ledge"))
 				{
 					LedgeGrabTag = "Ledge";
-					UE_LOG(LogTemp, Log, TEXT("Tag set to Ledge"));
+				}
+				else
+				{
+					LedgeGrabTag = "Wall";
 				}
 				
-				UE_LOG(LogTemp, Warning, TEXT("Ledge Trace: State changed to hanging"));
-
 				float X = WallImpactPoint.X + (WallImpactNormal * CapsuleRadius).X;
 				float Y = WallImpactPoint.Y + (WallImpactNormal * CapsuleRadius).Y;
 				float Z = LedgeImpactPoint.Z - 65.0f;
@@ -581,21 +731,15 @@ void AErosCharacter::CheckLedgeGrab()
 
 				FVector RotationVector = WallImpactNormal * -1;
 				RotationVector.Normalize();
+				FRotator TargetRotation = RotationVector.Rotation();
+				TargetRotation.Pitch = 0;
+				TargetRotation.Roll = 0;
 
 				FLatentActionInfo LatentInfo;
 				LatentInfo.CallbackTarget = this;
 
-				UKismetSystemLibrary::MoveComponentTo(RootComponent, TargetLocation, RotationVector.Rotation(), false, false, 0.2f, false, EMoveComponentAction::Type::Move, LatentInfo);
+				UKismetSystemLibrary::MoveComponentTo(RootComponent, TargetLocation, TargetRotation, false, false, 0.2f, false, EMoveComponentAction::Type::Move, LatentInfo);
 				GetMovementComponent()->StopMovementImmediately();
-			}
-			// if ledge is not close enough, run up wall
-			else if (DistFromLedge > CapsuleHalfHeight * 2.0f && DistFromLedge <= CapsuleHalfHeight * 4.0f && CurrentState == ECharacterState::CS_OnGround)
-			{
-				GetCharacterMovement()->SetMovementMode(MOVE_Flying);
-				CurrentState = ECharacterState::CS_WallRunVert;
-
-				UE_LOG(LogTemp, Warning, TEXT("State changed to running up wall"));
-				UE_LOG(LogTemp, Log, TEXT("Distance from ledge point is: %f"), DistFromLedge);
 			}
 		}
 	}
@@ -603,17 +747,35 @@ void AErosCharacter::CheckLedgeGrab()
 
 void AErosCharacter::OnOverlapBegin(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, int32 OtherBodyIndex, bool bFromSweep, const FHitResult& SweepResult)
 {
-	if (IInteractableInterface* Interactable = Cast<IInteractableInterface>(OtherActor))
+	if (!OtherActor) { return; }
+	
+	if (AInteractableActor* Interactable = Cast<AInteractableActor>(OtherActor))
 	{
-		NearbyInteractables.Add(Interactable);
+		if (!Cast<UMeshComponent>(OtherComp) && !OtherComp->ComponentHasTag("ErosCharIgnore"))
+		{
+			NearbyInteractables.Add(Interactable);
+		}
 	}
 }
 
 void AErosCharacter::OnOverlapEnd(UPrimitiveComponent* OverlappedComp, AActor* OtherActor, UPrimitiveComponent* OtherComp, int32 OtherBodyIndex)
 {
-	if (IInteractableInterface* Interactable = Cast<IInteractableInterface>(OtherActor))
+	if (AInteractableActor* Interactable = Cast<AInteractableActor>(OtherActor))
 	{
-		NearbyInteractables.Remove(Interactable);
+		if (!Cast<UMeshComponent>(OtherComp) && !OtherComp->ComponentHasTag("ErosCharIgnore"))
+		{
+			NearbyInteractables.Remove(Interactable);
+		}
+	}
+}
+
+void AErosCharacter::OnCapsuleOverlapBegin(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, int32 OtherBodyIndex, bool bFromSweep, const FHitResult& SweepResult)
+{
+	if (!OtherActor) { return; }
+
+	if (Cast<ADroneAICharacter>(OtherActor))
+	{
+		KillPlayer();
 	}
 }
 
@@ -627,9 +789,9 @@ void AErosCharacter::OnCollided(UPrimitiveComponent* HitComponent, AActor* Other
 
 void AErosCharacter::Interact()
 {
-	if (IInteractableInterface* Interactable = GetClosestInteractable())
+	if (NearestButton != nullptr)
 	{
-		Interactable->Interact(*this);
+		NearestButton->Interact(*this);
 	}
 }
 
@@ -637,6 +799,7 @@ FErosCharacterMovement AErosCharacter::GetModifiedCharacterMovement(FErosCharact
 {
 	FErosCharacterMovement ModifiedMovement = DefaultMovement;
 
+	// Apply modifiers from the prosthetics.
 	if (ArmSocket->HasProsthetic())
 	{
 		ModifiedMovement = ArmSocket->GetProsthetic()->ApplyModifiers(ModifiedMovement);
@@ -647,6 +810,11 @@ FErosCharacterMovement AErosCharacter::GetModifiedCharacterMovement(FErosCharact
 		ModifiedMovement = LegSocket->GetProsthetic()->ApplyModifiers(ModifiedMovement);
 	}
 
+	// Apply modifiers from fall damage - reduce the speed by the fall damage percent
+	ModifiedMovement.CrawlSpeed -= (ModifiedMovement.CrawlSpeed * FallDamagePercent);
+	ModifiedMovement.CrouchSpeed -= (ModifiedMovement.CrouchSpeed * FallDamagePercent);
+	ModifiedMovement.WalkSpeed -= (ModifiedMovement.WalkSpeed * FallDamagePercent);
+
 	return ModifiedMovement;
 }
 
@@ -654,8 +822,20 @@ void AErosCharacter::UpdateCharacterMovement(FErosCharacterMovement Movement)
 {
 	GetCharacterMovement()->AirControl = Movement.AirControl;
 	GetCharacterMovement()->JumpZVelocity = Movement.JumpZVelocity;
-	GetCharacterMovement()->MaxWalkSpeed = Movement.MaxWalkSpeed;
 	GetCharacterMovement()->RotationRate = Movement.RotationRate;
+
+	switch (CurrentState)
+	{
+	case ECharacterState::CS_Crouching:
+		GetCharacterMovement()->MaxWalkSpeed = Movement.CrouchSpeed;
+		break;
+	case ECharacterState::CS_Crawling:
+		GetCharacterMovement()->MaxWalkSpeed = Movement.CrawlSpeed;
+		break;
+	default:
+		GetCharacterMovement()->MaxWalkSpeed = Movement.WalkSpeed;
+		break;
+	}
 }
 
 void AErosCharacter::CheckFallDamage()
@@ -674,8 +854,8 @@ void AErosCharacter::CheckFallDamage()
 	}
 	else if (!GetCharacterMovement()->IsFalling() && bWasFalling)
 	{
+		float const FallDistance = GetActorLocation().Z - FallStartPosition.Z;
 		bWasFalling = false;
-		float FallDistance = GetActorLocation().Z - FallStartPosition.Z;
 
 		UE_LOG(LogTemp, Warning, TEXT("Fall distance: %f"), FallDistance);
 
@@ -687,9 +867,10 @@ void AErosCharacter::CheckFallDamage()
 			}
 			else
 			{
-				// TODO: Fall damage effect!
 				// Gives a value between 0.0 - 1.0
-				float FallDamagePercent = (FallDistance - MinFallDistance) / (MaxFallDistance - MinFallDistance);
+				FallDamagePercent = (FallDistance - MinFallDistance) / (MaxFallDistance - MinFallDistance);
+
+				OnFallDamageChanged.Broadcast(FallDamagePercent);
 
 				UE_LOG(LogTemp, Warning, TEXT("Fall damage: %f"), FallDamagePercent);
 			}
@@ -697,74 +878,368 @@ void AErosCharacter::CheckFallDamage()
 	}
 }
 
-void AErosCharacter::KillPlayer()
+void AErosCharacter::UpdateFallDamage(float DeltaSeconds)
 {
-	UE_LOG(LogTemp, Warning, TEXT("THE PLAYER HAS DIED FOR BEING A FUCKIN DINGUS!"));
+	if (FallDamagePercent == 0.0f) { return; }
+
+	FallDamagePercent -= (FallDamageRecovery * DeltaSeconds);
+
+	if (FallDamagePercent < 0.0f)
+	{
+		FallDamagePercent = 0.0f;
+	}
+
+	OnFallDamageChanged.Broadcast(FallDamagePercent);
 }
 
-void AErosCharacter::UpdateCharacterState()
+void AErosCharacter::KillPlayer()
 {
-	// Make character crawl if they only have one leg
-	if (HasFreeSocketOfType(EProstheticType::PT_Leg))
+	UE_LOG(LogTemp, Warning, TEXT("KillPlayer"));
+	GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	Destroy();
+}
+
+void AErosCharacter::Destroyed()
+{
+	AProsthetic* CurrentArm = nullptr;
+	AProsthetic* CurrentLeg = nullptr;
+
+	CurrentArm = ArmSocket->DetachProsthetic();
+	CurrentLeg = LegSocket->DetachProsthetic();
+
+	UE_LOG(LogTemp, Warning, TEXT("BEGIN DESTROOOOOY!"));
+	if (CurrentArm)
 	{
-		CurrentState = ECharacterState::CS_Crawling;
+		UE_LOG(LogTemp, Warning, TEXT("Limb 1!"));
+		CurrentArm->Destroy();
 	}
-	else if (CurrentState == ECharacterState::CS_Crawling)
+	if (CurrentLeg)
 	{
-		CurrentState = ECharacterState::CS_OnGround;
+		UE_LOG(LogTemp, Warning, TEXT("Limb 2!"));
+		CurrentLeg->Destroy();
 	}
 
-	// keep movement mode inline with CurrentState
-	if (GetCharacterMovement()->MovementMode != MovementModeLastTick)
+	Super::Destroyed();
+}
+
+void AErosCharacter::FuckIFellAndBrokeEverything()
+{
+	UE_LOG(LogTemp, Warning, TEXT("Prosthetic break!"));
+
+	if (HasProstheticOfType(EProstheticType::PT_Arm))
 	{
-		if (GetCharacterMovement()->MovementMode == MOVE_Walking)
-		{
-			CurrentState = ECharacterState::CS_OnGround;
-		}
-		else if (GetCharacterMovement()->MovementMode == MOVE_Falling)
-		{
-			switch (CurrentState)
-			{
-			case ECharacterState::CS_Dropping:
-				break;
-			default:
-				CurrentState = ECharacterState::CS_InAir;
-				break;
-			}
-		}
+		ArmSocket->DetachProsthetic()->Destroy();
+	}
+	if (HasProstheticOfType(EProstheticType::PT_Leg))
+	{
+		LegSocket->DetachProsthetic()->Destroy();
+	}
+	bWasFalling = false;
+
+	// This is only called at the bottom of the factory right now, and because the character
+	// is likely hanging before hit the break volume they need to change to the drop state first
+	// before then changing to the crawl state...
+	ChangeState(CurrentState == ECharacterState::CS_Hanging ? ECharacterState::CS_Dropping : ECharacterState::CS_Crawling);
+}
+
+void AErosCharacter::ResetFallDistance()
+{
+	FallStartPosition = GetActorLocation();
+}
+
+void AErosCharacter::ResetForNewGame()
+{	
+	FVector const StartLocation = FVector(-391.0f, 25489.0f, 5989.574219f);
+	FRotator const StartRotation = FRotator(0,-149,0);
+		
+	SetActorLocation(StartLocation);
+	SetActorRotation(StartRotation);
+	
+	Cast<AErosGameMode>(GetWorld()->GetAuthGameMode())->UpdateRespawnInformation(this, this);
+
+	// remove old limbs
+	if (HasProstheticOfType(EProstheticType::PT_Arm))
+	{
+		DetachProstheticOfType(EProstheticType::PT_Arm)->Destroy();
+	}
+	if (HasProstheticOfType(EProstheticType::PT_Leg))
+	{
+		DetachProstheticOfType(EProstheticType::PT_Leg)->Destroy();
 	}
 
-	// apply movement mode changes based on CurrentState
-	if (CurrentState != StateLastTick)
-	{
-		switch (CurrentState)
-		{
-		case ECharacterState::CS_OnGround:
-			DefaultCharacterMovement.MaxWalkSpeed = 600.0f;
-			GetCapsuleComponent()->SetCapsuleHalfHeight(93);
-			GetMesh()->SetRelativeLocation(FVector(0, 0, -93));
-			UE_LOG(LogTemp, Warning, TEXT("MaxWalkSpeed set to 600"));
-			LedgeGrabTag = "";
-			break;
-		case ECharacterState::CS_Crouching:
-			DefaultCharacterMovement.MaxWalkSpeed = 400.0f;
-			GetCapsuleComponent()->SetCapsuleHalfHeight(63);
-			GetMesh()->SetRelativeLocation(FVector(0, 0, -63));
-			UE_LOG(LogTemp, Warning, TEXT("MaxWalkSpeed set to 400"));
-			break;
-		case ECharacterState::CS_Crawling:
-			DefaultCharacterMovement.MaxWalkSpeed = 200.0f;
-			UE_LOG(LogTemp, Warning, TEXT("MaxWalkSpeed set to 200"));
-			break;
-		default:
-			break;
-		}
-	}
+	// Spawn and attach default limbs.
+	AttachProsthetic(*GetWorld()->SpawnActor<AProsthetic>(DefaultArm.GetDefaultObject()->GetClass()));
+	AttachProsthetic(*GetWorld()->SpawnActor<AProsthetic>(DefaultLeg.GetDefaultObject()->GetClass()));
 }
 
 void AErosCharacter::CheckCameraDistance()
 {
 	bIsCameraTooClose = (CameraBoom->GetComponentLocation() - FollowCamera->GetComponentLocation()).Size() < 125.0f;
 
-	GetMesh()->SetVisibility(!bIsCameraTooClose, true);
+	// Don't want to propogate the visibility because it turns some things off which we want on.
+
+	GetMesh()->SetVisibility(!bIsCameraTooClose);
+
+	if (HasProstheticOfType(EProstheticType::PT_Arm))
+	{
+		//GetArmSocket()->GetProsthetic()->GetMesh()->SetVisibility(!bIsCameraTooClose);
+		GetArmSocket()->GetProsthetic()->SetMeshVisibility(!bIsCameraTooClose);
+	}
+	if (HasProstheticOfType(EProstheticType::PT_Leg))
+	{
+		//GetLegSocket()->GetProsthetic()->GetMesh()->SetVisibility(!bIsCameraTooClose);
+		GetLegSocket()->GetProsthetic()->SetMeshVisibility(!bIsCameraTooClose);
+	}
+}
+
+void AErosCharacter::ChangeState(ECharacterState NewState)
+{
+	if (NewState == CurrentState) { return; }
+
+	const UEnum* NewStateEnum = FindObject<UEnum>(ANY_PACKAGE, TEXT("ECharacterState"));
+	UE_LOG(LogTemp, Log, TEXT("Changed State to %s"), *(NewStateEnum ? NewStateEnum->GetEnumName(static_cast<int>(NewState)) : TEXT("<Invalid Enum>")));
+
+	ExitState(CurrentState);
+	EnterState(NewState);
+}
+
+void AErosCharacter::EnterState(ECharacterState State)
+{
+	switch (State)
+	{
+
+	case ECharacterState::CS_OnGround:
+	{
+
+		float PrevCapsuleHeight = GetCapsuleComponent()->GetUnscaledCapsuleHalfHeight();
+		float CapsuleHeightDifference = STANDING_CAPSULE_HALF_HEIGHT - PrevCapsuleHeight;
+		GetCapsuleComponent()->SetCapsuleHalfHeight(STANDING_CAPSULE_HALF_HEIGHT);
+		GetMesh()->SetRelativeLocation(FVector(0, 0, -STANDING_CAPSULE_HALF_HEIGHT));
+		SetActorLocation(GetActorLocation() + FVector(0, 0, CapsuleHeightDifference));
+		CameraBoom->SocketOffset = FVector(0, 0, 100);
+		CameraBoom->TargetOffset = FVector(0, 0, 50);
+		CameraBoom->TargetArmLength = 500;
+		GetCharacterMovement()->SetMovementMode(MOVE_Walking);
+		LedgeGrabTag = "";
+	}
+		break;
+
+	case ECharacterState::CS_Hanging:
+	case ECharacterState::CS_CraneHang:
+
+		GetCharacterMovement()->SetMovementMode(MOVE_Custom);
+
+		break;
+
+	case ECharacterState::CS_Dropping:
+
+		GetCharacterMovement()->SetMovementMode(MOVE_Falling);
+
+		break;
+
+	case ECharacterState::CS_Climbing:
+
+		GetCharacterMovement()->SetMovementMode(MOVE_Flying);
+
+		break;
+
+	case ECharacterState::CS_WallRunVert:
+
+		GetCharacterMovement()->SetMovementMode(MOVE_Flying);
+
+		break;
+
+	case ECharacterState::CS_Crouching:
+	{
+
+		ACharacter::Crouch(false);
+
+		float PrevCapsuleHeight = GetCapsuleComponent()->GetUnscaledCapsuleHalfHeight();
+		float CapsuleHeightDifference = CROUCHING_CAPSULE_HALF_HEIGHT - PrevCapsuleHeight;
+		GetCapsuleComponent()->SetCapsuleHalfHeight(CROUCHING_CAPSULE_HALF_HEIGHT);
+		GetMesh()->SetRelativeLocation(FVector(0, 0, -CROUCHING_CAPSULE_HALF_HEIGHT));
+		SetActorLocation(GetActorLocation() + FVector(0, 0, CapsuleHeightDifference));
+		CameraBoom->SocketOffset = FVector(0, 0, 50);
+		CameraBoom->TargetOffset = FVector(0, 0, 25);
+		CameraBoom->TargetArmLength = 500;
+	}
+		break;
+
+	case ECharacterState::CS_Crawling:
+	{
+		// set the collider to be a ball
+		/*float PrevCapsuleHeight = GetCapsuleComponent()->GetUnscaledCapsuleHalfHeight();
+		float CapsuleHeightDifference = GetCapsuleComponent()->GetUnscaledCapsuleRadius() - PrevCapsuleHeight;
+		GetCapsuleComponent()->SetCapsuleHalfHeight(GetCapsuleComponent()->GetUnscaledCapsuleRadius());
+		GetMesh()->SetRelativeLocation(FVector(0, 0, -GetCapsuleComponent()->GetUnscaledCapsuleRadius()));
+		SetActorLocation(GetActorLocation() + FVector(0, 0, CapsuleHeightDifference));*/
+	}
+		break;
+
+	case ECharacterState::CS_LegOff:
+	case ECharacterState::CS_LegOn:
+	case ECharacterState::CS_ArmOff:
+	case ECharacterState::CS_ArmOn:
+	case ECharacterState::CS_StartCrawl:
+	{
+		float PrevCapsuleHeight = GetCapsuleComponent()->GetUnscaledCapsuleHalfHeight();
+		float CapsuleHeightDifference = CROUCHING_CAPSULE_HALF_HEIGHT - PrevCapsuleHeight;
+		GetCapsuleComponent()->SetCapsuleHalfHeight(CROUCHING_CAPSULE_HALF_HEIGHT);
+		GetMesh()->SetRelativeLocation(FVector(0, 0, -CROUCHING_CAPSULE_HALF_HEIGHT));
+		SetActorLocation(GetActorLocation() + FVector(0, 0, CapsuleHeightDifference));
+	}
+		break;
+
+	}
+	
+	CurrentState = State;
+}
+
+void AErosCharacter::ExitState(ECharacterState State)
+{
+}
+
+void AErosCharacter::TickState(float DeltaSeconds)
+{
+	switch (CurrentState)
+	{
+
+	case ECharacterState::CS_OnGround:
+
+		if (GetCharacterMovement()->MovementMode == MOVE_Falling)
+		{
+			ChangeState(ECharacterState::CS_InAir);
+		}
+		else if (!HasProstheticOfType(EProstheticType::PT_Leg))
+		{
+			ChangeState(ECharacterState::CS_Crawling);
+		}
+
+		break;
+
+	case ECharacterState::CS_InAir:
+
+		if (GetCharacterMovement()->MovementMode == MOVE_Walking)
+		{
+			ChangeState(ECharacterState::CS_OnGround);
+		}
+
+		break;
+		
+	case ECharacterState::CS_Dropping:
+
+		if (GetCharacterMovement()->MovementMode == MOVE_Walking)
+		{
+			ChangeState(ECharacterState::CS_OnGround);
+		}
+
+		break;
+
+	}
+}
+
+void AErosCharacter::UpdateInteractableHighlights()
+{
+	NearestLeg = nullptr;
+	NearestArm = nullptr;
+	NearestButton = nullptr;
+
+	for (int i = 0; i < NearbyInteractables.Num(); ++i)
+	{
+		AInteractableActor* TempActor = Cast<AInteractableActor>(NearbyInteractables[i]);
+
+		// Piece of shit test. Can't find any better fix...
+		if (TempActor == NewLegProstheticToAttach || TempActor == NewArmProstheticToAttach || TempActor == LegProstheticToRemove || TempActor == ArmProstheticToRemove)
+		{
+			TempActor->SetUIVisible(false);
+			continue;
+		}
+
+		if (Cast<AUnattachedProsthetic>(TempActor))
+		{
+			// For each leg check if it is closer than the previous leg, and if it is then update the NearestLeg
+			if (Cast<AUnattachedProsthetic>(TempActor)->GetType() == EProstheticType::PT_Leg)
+			{
+				if (NearestLeg)
+				{
+					if ((TempActor->GetActorLocation() - GetActorLocation()).Size() < (NearestLeg->GetActorLocation() - GetActorLocation()).Size())
+					{
+						NearestLeg = TempActor;
+					}
+				}
+				else
+				{
+					NearestLeg = TempActor;
+				}
+
+			}
+			// For each arm check if it is closer than the previous arm, and if it is then update the Nearestarm
+			else if (Cast<AUnattachedProsthetic>(TempActor)->GetType() == EProstheticType::PT_Arm)
+			{
+				if (NearestArm)
+				{
+					if ((TempActor->GetActorLocation() - GetActorLocation()).Size() < (NearestArm->GetActorLocation() - GetActorLocation()).Size())
+					{
+						NearestArm = TempActor;
+					}
+				}
+				else
+				{
+					NearestArm = TempActor;
+				}
+			}
+		}
+		else if (Cast<ASwitch>(TempActor) || Cast<AProstheticCabinet>(TempActor))
+		{
+			if (NearestButton)
+			{
+				if ((TempActor->GetActorLocation() - GetActorLocation()).Size() < (NearestButton->GetActorLocation() - GetActorLocation()).Size())
+				{
+					NearestButton = TempActor;
+				}
+			}
+			else
+			{
+				NearestButton = TempActor;
+			}
+		}
+	}
+
+	// Set Nearest arm and leg UI to show and all other UI's to hide
+	if (NearestLeg != PreviousNearestLeg)
+	{
+		if (PreviousNearestLeg)
+		{
+			PreviousNearestLeg->SetUIVisible(false);
+		}
+		if (NearestLeg)
+		{
+			NearestLeg->SetUIVisible(true);
+		}
+		PreviousNearestLeg = NearestLeg;
+	}
+	if (NearestArm != PreviousNearestArm)
+	{
+		if (PreviousNearestArm)
+		{
+			PreviousNearestArm->SetUIVisible(false);
+		}
+		if (NearestArm)
+		{
+			NearestArm->SetUIVisible(true);
+		}
+		PreviousNearestArm = NearestArm;
+	}
+	if (NearestButton != PreviousNearestButton)
+	{
+		if (PreviousNearestButton)
+		{
+			PreviousNearestButton->SetUIVisible(false);
+		}
+		if (NearestButton)
+		{
+			NearestButton->SetUIVisible(true);
+		}
+		PreviousNearestButton = NearestButton;
+	}
 }

@@ -17,9 +17,15 @@ class EROS_API UErosGameInstance : public UGameInstance
 
 public:
 
+	UErosGameInstance();
+
 	/* Initialise the game managers. */
+	UFUNCTION(BlueprintCallable, Category = "ManagerControl")
 	void Initialise();
 
+	UFUNCTION(BlueprintCallable, Category = "ManagerControl")
+	void Reset();
+	
 	/* Returns a manager of the requested type. May be null! */
 	template<typename T> T* GetManager()
 	{
@@ -30,18 +36,25 @@ public:
 
 		for (int Index = 0; Index < ManagerInstances.Num(); Index++)
 		{
-			if (ManagerInstances[Index]->IsA(T::StaticClass()))
+			if (IsValid(ManagerInstances[Index]))
 			{
-				return Cast<T>(ManagerInstances[Index]);
-			}
+				if (ManagerInstances[Index]->IsA(T::StaticClass()))
+				{
+					return Cast<T>(ManagerInstances[Index]);
+				}
+			}			
 		}
 		return nullptr;
 	}
 
+	/* Hack to allow keyboard/controller controls to be specified. Only affects widgets. 0 = controller. 1 = keyboard*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Controls)
+	int CurrentControlScheme;
+
 private:
 
 	/* Only initialise the game instance managers once. */
-	bool bInitialised;
+	bool bInitialised = false;
 	
 	/* List of template managers to spawn. */
 	UPROPERTY(EditDefaultsOnly, Category = Managers)
