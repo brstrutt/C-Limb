@@ -21,6 +21,9 @@ public:
 	/* Enable/Disable tick to control if the conveyor is moving. */
 	void ActivateConveyor(bool Active);
 
+	/* Cleanup the conveyor belt sections. */
+	virtual void BeginDestroy() override;
+
 private:
 
 	/* Collider to detect when a conveyor belt section has reached the end and needs placing back at the beginning. */

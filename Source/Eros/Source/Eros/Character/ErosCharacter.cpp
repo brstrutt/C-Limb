@@ -968,8 +968,13 @@ void AErosCharacter::ResetForNewGame()
 	}
 
 	// Spawn and attach default limbs.
-	AttachProsthetic(*GetWorld()->SpawnActor<AProsthetic>(DefaultArm.GetDefaultObject()->GetClass()));
-	AttachProsthetic(*GetWorld()->SpawnActor<AProsthetic>(DefaultLeg.GetDefaultObject()->GetClass()));
+	AProsthetic* NewArm = GetWorld()->SpawnActor<AProsthetic>(DefaultArm.GetDefaultObject()->GetClass());
+	AttachProsthetic(*NewArm);
+	OnProstheticSwapped.Broadcast(this, NewArm);
+
+	AProsthetic* NewLeg = GetWorld()->SpawnActor<AProsthetic>(DefaultLeg.GetDefaultObject()->GetClass());
+	AttachProsthetic(*NewLeg);
+	OnProstheticSwapped.Broadcast(this, NewLeg);
 }
 
 void AErosCharacter::CheckCameraDistance()
